@@ -360,3 +360,36 @@ def test_spine_same_revision_same_value_is_idempotent():
         assert out["ok"] and not out["applied"] and out["reason"]=="same-state"
         assert sp.conflicts()==[]
     finally:td.cleanup()
+
+
+def test_ai_router_provider_call_does_not_block_event_loop(monkeypatch):
+    import asyncio,sys,types
+    from app.ai_router import AIRouter
+
+    class Msg:
+        content="ok"
+    class Choice:
+        message=Msg()
+    class Resp:
+        choices=[Choice()]
+
+    def blocking_completion(**kwargs):
+        time.sleep(.25)
+        return Resp()
+
+    fake=types.SimpleNamespace(completion=blocking_completion)
+    monkeypatch.setitem(sys.modules,"litellm",fake)
+    monkeypatch.setenv("EILA_TEST_FAST_MODELS","fake/model")
+    router=AIRouter({"ai":{"fast_models_env":"EILA_TEST_FAST_MODELS","fallback_models":[]}})
+
+    async def scenario():
+        started=time.perf_counter()
+        task=asyncio.create_task(router.ask("fast",[{"role":"user","content":"x"}]))
+        await asyncio.sleep(.03)
+        elapsed=time.perf_counter()-started
+        result=await task
+        return elapsed,result
+
+    elapsed,result=asyncio.run(scenario())
+    assert elapsed<.15
+    assert result=="ok"
