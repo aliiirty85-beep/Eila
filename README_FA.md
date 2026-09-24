@@ -1,4 +1,4 @@
-# Eila Legend v2.0 LTS
+# Eila Spine v3 — development branch
 
 ایلا یک مربی مطالعه‌ی همیشه‌حاضر، گرم، فعال و مقاوم در برابر خرابی است. هسته‌ی کار یک چرخه‌ی کوتاه و پیوسته است:
 
@@ -59,3 +59,52 @@ Gaze نیز ذهن‌خوانی نیست. calibration و تست سخت‌افز�
 
 
 <!-- Eila Spine v3 development branch -->
+
+
+## Eila Spine: هویت مستقل از دستگاه
+
+در v3 لپ‌تاپ دیگر «خانه ایلا» نیست. هویت، state، policyها و eventهای ایلا از device جدا شده‌اند. گوشی، تبلت و لپ‌تاپ فقط Node هستند.
+
+- `spine_state`: state canonical و revisioned.
+- `events`: event log با `event_id` یکتا؛ retry یک event را دوبار اجرا نمی‌کند.
+- `devices`: Device Registry با active/retired، hardware fingerprint و revision.
+- `device_snapshots`: replica فشرده برای بازیابی روی لپ‌تاپ جدید.
+- Sync protocol v3: snapshot + event tail + conflict-aware Spine replication.
+
+### تعویض لپ‌تاپ
+
+1. Eila Core را روی لپ‌تاپ جدید نصب می‌کنی.
+2. Companion گوشی/تبلت به Core جدید pair می‌شود.
+3. Node جدید hardware/capabilities خود را اعلام می‌کند.
+4. snapshot ذخیره‌شده گوشی به Core offer می‌شود.
+5. stateهایی که روی Core جدید نیستند از replica برمی‌گردند.
+6. مدل‌های حجیم AI cache محسوب می‌شوند و می‌توانند دوباره دانلود شوند.
+7. فقط calibrationهای وابسته به هندسه دوربین/نمایشگر دوباره انجام می‌شوند.
+8. لپ‌تاپ قدیمی در Registry به `retired` تبدیل می‌شود؛ هویت ایلا عوض نمی‌شود.
+
+## Live Evolution
+
+درخواست‌هایی مثل «از این به بعد...» می‌توانند به policy versioned تبدیل شوند. policyهای رفتاری امن hot-reload می‌شوند؛ درخواست‌هایی که سنسور/API/permission یا کد جدید می‌خواهند به `capability_request` تبدیل می‌شوند و نباید مستقیم live code را بازنویسی کنند.
+
+هر policy:
+- scope
+- trigger
+- action
+- priority
+- version
+- source/rationale
+- history
+
+دارد و قابلیت disable/rollback برای آن در Core پیش‌بینی شده است.
+
+## Student Model / Error Genome
+
+v3 علاوه بر Learning Pulse، برای topicها attempts/correct/mastery/next_due نگه می‌دارد. پاسخ غلط:
+- به Error Genome اضافه می‌شود،
+- repair سریع را برنامه‌ریزی می‌کند،
+- سپس retest هم‌مفهوم می‌آید،
+- و مرورهای بعدی به‌تدریج فاصله می‌گیرند.
+
+## وضعیت validation
+
+این شاخه عمداً از `main` جدا نگه داشته می‌شود تا نسخه پایدار قربانی توسعه نشود. تغییرات v3 تا قبل از build/test gate کامل نباید به‌عنوان نسخه production معرفی شوند. Hardware-dependent claims مثل دقت Gaze، مصرف باتری و handoff واقعی گوشی↔تبلت↔لپ‌تاپ باید روی دستگاه واقعی benchmark شوند.
