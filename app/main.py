@@ -421,6 +421,9 @@ def sync_offer(r:SnapshotReq):return SYNC.store_offer(r.device_id,r.snapshot)
 @app.post("/api/sync/restore-memory/{device_id}")
 def sync_restore(device_id:str):return SYNC.restore_memory_if_empty(device_id)
 
+@app.post("/api/sync/restore-spine/{device_id}")
+def sync_restore_spine(device_id:str):return SYNC.restore_spine_from_device(device_id)
+
 @app.post("/api/activity/claim")
 def activity_claim(r:ActivityClaimReq):
     out=VERIFIER.claim(r.activity,r.minutes,r.note)
