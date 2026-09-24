@@ -56,6 +56,11 @@ class OverlayService:Service(){
     private fun ri(a:Int,b:Int)=if(a>=b)a else Random.nextInt(a,b+1)
     private fun rl(a:Long,b:Long)=if(a>=b)a else Random.nextLong(a,b+1)
     private fun type()=if(Build.VERSION.SDK_INT>=26)WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+    private fun windowFlags():Int{
+        var f=WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+        f = if(cfg.tapDestroys) f or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL else f or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        return f
+    }
 
     private fun safeBounds():Rect{
         return if(Build.VERSION.SDK_INT>=30){
@@ -77,7 +82,7 @@ class OverlayService:Service(){
 
     private fun makeBall(){
         val s=px(ri(cfg.minSizeDp,cfg.maxSizeDp))
-        val p=WindowManager.LayoutParams(s,s,type(),WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,PixelFormat.TRANSLUCENT).apply{gravity=Gravity.TOP or Gravity.START}
+        val p=WindowManager.LayoutParams(s,s,type(),windowFlags(),PixelFormat.TRANSLUCENT).apply{gravity=Gravity.TOP or Gravity.START}
         lateinit var r:Rival
         val v=BallView(this,{destroyBall(r,true)},{cfg.tapDestroys})
         r=Rival(v,p);randomize(r,true);wm.addView(v,p);rivals.add(r);scheduleMove(r)
@@ -133,7 +138,7 @@ class OverlayService:Service(){
         EilaBridge.event(cfg,"pattern",JSONObject().put("tablet",isTablet()).put("minBalls",cfg.minBalls).put("maxBalls",cfg.maxBalls))
     }
 
-    fun applyConfig(){cfg=OverlayBus.config.copy();normalize();setCount();rivals.forEach{randomize(it,true);runCatching{wm.updateViewLayout(it.view,it.params)};scheduleMove(it)};scheduleCount();EilaBridge.event(cfg,"config_applied")}
+    fun applyConfig(){cfg=OverlayBus.config.copy();normalize();setCount();rivals.forEach{r->r.params.flags=windowFlags();randomize(r,true);runCatching{wm.updateViewLayout(r.view,r.params)};scheduleMove(r)};scheduleCount();EilaBridge.event(cfg,"config_applied")}
     fun newPattern(){restartPattern()}
     fun togglePause(){
         paused=!paused
