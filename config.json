@@ -1,6 +1,6 @@
 {
-  "version": "2.1-LTS",
-  "protocol_version": 2,
+  "version": "3.0-spine",
+  "protocol_version": 3,
   "verdict_interval_seconds": 5,
   "microgoal_default_seconds": 60,
   "microgoal_min_seconds": 20,
@@ -41,5 +41,9 @@
     "eating": 30,
     "sleeping": 480,
     "resting": 30
-  }
+  },
+  "spine_replica_interval_minutes": 60,
+  "device_event_pull_limit": 200,
+  "live_evolution": true,
+  "device_independent_identity": true
 }
