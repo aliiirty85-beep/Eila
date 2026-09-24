@@ -34,6 +34,12 @@ class EventBus:
                        (int(seq),max(1,min(1000,int(limit))))).fetchall()
         c.close();return [self._row(r) for r in rows]
 
+    def tail(self,limit:int=500):
+        n=max(1,min(1000,int(limit)));c=self.db_factory()
+        rows=c.execute("select * from events order by seq desc limit ?",(n,)).fetchall();c.close()
+        rows=list(reversed(rows))
+        return [self._row(r) for r in rows]
+
     def ack(self,event_id:str,device_id:str):
         c=self.db_factory()
         c.execute("insert or replace into event_acks(event_id,device_id,acked_at) values(?,?,?)",
@@ -114,7 +120,7 @@ class SyncManager:
         self.spine=spine or SpineState(db_factory,self.events)
 
     def snapshot(self,current,micro,return_contract,rival,research,policies=None,devices=None):
-        events=self.events.list_since(0,500)
+        events=self.events.tail(500)
         return {
           "protocol_version":self.protocol_version,
           "server_ts":int(time.time()),
