@@ -257,19 +257,65 @@ def micro_start(r:MicroReq):
     SPINE.set("microgoal",g,"core");BUS.queue("microgoal",g,ttl_seconds=900);return {"ok":True,"microgoal":g,"theme":w["theme"]}
 
 @app.post("/api/micro/feedback")
-def micro_feedback(r:FeedbackReq):
-    before=float(STATE.get("attention_score",50));result=MICRO.feedback(r.answer,r.status,r.note,r.confidence,r.latency_ms,r.topic,r.error_type)
-    if result.get("ok"):
-        result["consequence"]=ENG.feedback(result["passed"],result.get("style",""),result.get("streak",0))
-        ENG.record_trial(result.get("style","") or "precision",result["passed"],before,float(STATE.get("attention_score",before)),r.latency_ms)
-        BUS.queue("feedback",{"text":result["consequence"],"passed":result["passed"],"clear_microgoal":True},ttl_seconds=180)
-        SPINE.set("microgoal",None,"core")
-        topic=(r.topic or result.get("finished",{}).get("context_ref") or "").strip()
-        if topic:
-            result["learning_model"]=LEARN.observe(topic,result["passed"],r.error_type)
-        actions=policy_actions(result.get("finished",{}).get("kind","study"))
-        if CURRENT["session_id"] and actions.get("competition.enabled",True):
-            RIVAL.add_user_score(CURRENT["session_id"],3 if result["passed"] else -1)
+async def micro_feedback(r:FeedbackReq):
+    before=float(STATE.get("attention_score",50))
+    result=MICRO.feedback(r.answer,r.status,r.note,r.confidence,r.latency_ms,r.topic,r.error_type)
+    if not result.get("ok"):return result
+
+    finished=result.get("finished",{})
+    source=finished.get("source","")
+    raw_topic=(r.topic or finished.get("context_ref") or "").strip()
+    topic=raw_topic[7:] if raw_topic.startswith("repair:") else raw_topic
+    result["consequence"]=ENG.feedback(result["passed"],result.get("style",""),result.get("streak",0))
+    ENG.record_trial(result.get("style","") or "precision",result["passed"],before,float(STATE.get("attention_score",before)),r.latency_ms)
+    BUS.queue("feedback",{"text":result["consequence"],"passed":result["passed"],"clear_microgoal":True},ttl_seconds=180)
+    SPINE.set("microgoal",None,"core")
+
+    if topic:
+        result["learning_model"]=LEARN.observe(topic,result["passed"],r.error_type)
+
+    actions=policy_actions(finished.get("kind","study"))
+    if CURRENT["session_id"] and source!="repair" and actions.get("competition.enabled",True):
+        RIVAL.add_user_score(CURRENT["session_id"],3 if result["passed"] else -1)
+
+    # Failure becomes repair -> retest, rather than silent abandonment.
+    if not result["passed"] and source!="repair" and CURRENT["session_id"]:
+        repair=await QUESTIONS.repair_after_failure(finished,r.answer,r.error_type,topic)
+        if repair.get("ok"):
+            d=repair["data"]
+            pending={"instruction":d.get("retest_instruction") or finished.get("instruction",""),
+                     "question":d.get("retest_question") or finished.get("question",""),
+                     "expected":d.get("retest_expected",""),"seconds":d.get("retest_seconds",55),
+                     "topic":d.get("topic") or topic,"error_type":d.get("error_type") or r.error_type}
+            SPINE.set("pending_retest",pending,"core")
+            instruction=d.get("repair_instruction") or "علت اشتباه را در یک جمله مشخص کن."
+            question=d.get("repair_question") or "اشتباه دقیقاً از کجا شروع شد؟"
+            secs=d.get("repair_seconds",35)
+        else:
+            pending={"instruction":finished.get("instruction",""),"question":finished.get("question",""),
+                     "expected":finished.get("expected",""),"seconds":55,"topic":topic,"error_type":r.error_type}
+            SPINE.set("pending_retest",pending,"core")
+            instruction="در یک جمله مشخص کن اشتباهت مفهومی بود، بی‌دقتی بود، عجله بود یا محاسبات."
+            question="علت خطا چه بود و دفعه بعد دقیقاً چه چیزی را چک می‌کنی؟";secs=35
+        style="comeback";w=ENG.wrap(instruction,style,secs,MICRO.streak)
+        g=MICRO.start(CURRENT["session_id"],instruction,"repair",question,"","repair",secs,style,
+                      w["display_instruction"],w["salience"],"repair:"+topic)
+        SPINE.set("microgoal",g,"core");BUS.queue("microgoal",g,ttl_seconds=900)
+        result["repair_microgoal"]=g
+
+    elif result["passed"] and source=="repair" and CURRENT["session_id"]:
+        pending=SPINE.get("pending_retest")
+        if pending and pending.get("value"):
+            d=pending["value"];secs=max(20,min(120,int(d.get("seconds") or 55)))
+            instruction=d.get("instruction") or "همان مفهوم را دوباره حل کن."
+            style="precision";w=ENG.wrap(instruction,style,secs,MICRO.streak)
+            g=MICRO.start(CURRENT["session_id"],instruction,"retest",d.get("question",""),d.get("expected",""),
+                          "retest",secs,style,w["display_instruction"],w["salience"],d.get("topic",""))
+            SPINE.set("pending_retest",None,"core");SPINE.set("microgoal",g,"core")
+            BUS.queue("microgoal",g,ttl_seconds=900);result["retest_microgoal"]=g
+    elif source=="retest":
+        SPINE.set("pending_retest",None,"core")
+
     return result
 
 @app.post("/api/return/start")
