@@ -2,7 +2,7 @@ name: Build Eila Android
 on:
   workflow_dispatch:
   push:
-    branches: [ main, legend-v2 ]
+    branches: [ main, legend-v2, eila-spine-v3 ]
     paths:
       - 'android/**'
       - 'scripts/fetch_models.py'
