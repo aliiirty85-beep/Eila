@@ -1,0 +1,30 @@
+name: Check Eila Core
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, legend-v2 ]
+    paths:
+      - 'app/**'
+      - 'tests/**'
+      - 'requirements*.txt'
+      - 'launcher.py'
+      - 'doctor.py'
+      - 'config.json'
+      - '.github/workflows/check-core.yml'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Syntax check
+        run: python -m compileall -q app launcher.py doctor.py tests
+      - name: Import smoke test
+        run: python -c "import app.main; print(app.main.CFG['version'])"
+      - name: JavaScript syntax
+        run: node --check app/static/app.js
+      - name: Unit tests
+        run: python -m pytest -q
