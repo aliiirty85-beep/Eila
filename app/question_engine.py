@@ -17,6 +17,7 @@ class QuestionEngine:
         )
         content=[{"type":"text","text":prompt+"\nGaze summary: "+json.dumps(gaze,ensure_ascii=False)}]
         has_source=False
+        has_image_source=False
         if active and active.get("content"):
             has_source=True
             content.append({"type":"text","text":"Active source context:\n"+active["content"][:12000]})
@@ -26,6 +27,7 @@ class QuestionEngine:
                 page=Path(active["ref"]).read_bytes()
                 if page:
                     has_source=True
+                    has_image_source=True
                     content.append({"type":"image_url","image_url":{"url":self.screen.data_url(page)}})
             except Exception:
                 pass
@@ -40,7 +42,7 @@ class QuestionEngine:
                     if crop:content.append({"type":"image_url","image_url":{"url":self.screen.data_url(crop)}})
         if not shot and not has_source:
             return {"ok":False,"error":"content-required","detail":"برای کتاب/صفحه غیرقابل‌مشاهده باید source context یا snapshot داشته باشم."}
-        tier="deep" if deep and not shot else ("vision" if shot else "deep")
+        tier="vision" if (shot or has_image_source) else "deep"
         result=await self.ai.ask_json(tier,[{"role":"user","content":content}],max_tokens=850)
         if not result.get("ok"):return result
         d=result["data"]
