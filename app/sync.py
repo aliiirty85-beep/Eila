@@ -206,10 +206,12 @@ class SyncManager:
         c.commit();c.close()
         applied=0;duplicates=0;state_applied=0;state_conflicts=0;policies_imported=0;memory_imported=0
         if legacy:
-            for item in snapshot.get("memory",[])[:300]:
-                self.memory.upsert(item.get("category","context"),item.get("key","restored"),
-                                   item.get("value",""),float(item.get("confidence",.5)),"legacy-v2-replica")
-                memory_imported+=1
+            c0=self.db_factory();local_memory_count=int(c0.execute("select count(*) from memory_items where active=1").fetchone()[0]);c0.close()
+            if local_memory_count==0:
+                for item in snapshot.get("memory",[])[:300]:
+                    self.memory.upsert(item.get("category","context"),item.get("key","restored"),
+                                       item.get("value",""),float(item.get("confidence",.5)),"legacy-v2-replica")
+                    memory_imported+=1
             legacy_state={
                 "session":snapshot.get("session"),
                 "microgoal":snapshot.get("microgoal"),
