@@ -78,6 +78,13 @@ class Storage:
           priority integer not null default 50,enabled integer not null default 1,version integer not null default 1,
           source text default 'user',rationale text default '',supersedes text default ''
         );
+        create table if not exists behavior_policy_history(
+          policy_id text not null,version integer not null,recorded_at integer not null,
+          scope text not null,trigger_json text not null default '{}',action_json text not null default '{}',
+          priority integer not null default 50,enabled integer not null default 1,
+          source text default 'user',rationale text default '',supersedes text default '',
+          primary key(policy_id,version)
+        );
         create table if not exists capability_registry(
           capability_id text not null,provider_device text not null,status text not null default 'unknown',
           metadata text not null default '{}',last_verified integer not null,
