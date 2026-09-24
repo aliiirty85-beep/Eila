@@ -34,7 +34,7 @@ class MaintenanceEngine:
         interval=float(self.cfg.get("maintenance_interval_minutes",30))*60
         if time.time()-self.last_tick<interval:return self.last_report
         self.last_tick=time.time()
-        report={"ts":int(time.time()),"database":self.storage.integrity(),"repairs":[],"warnings":[]}
+        report={"ts":int(time.time()),"database":self.storage.integrity(),"synthetic":self.synthetic_checks(),"repairs":[],"warnings":[]}
         if not report["database"].get("ok"):
             r=self.storage.recover_latest_backup(self.data_dir/"backups")
             report["repairs"].append({"database_recovery":r});self._event("database-recovery","critical",json.dumps(r),r.get("ok"))
