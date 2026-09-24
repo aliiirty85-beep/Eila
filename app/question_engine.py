@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json
+import json,asyncio
 
 class QuestionEngine:
     def __init__(self,ai,screen,context_registry):
@@ -33,12 +33,12 @@ class QuestionEngine:
                 pass
         shot=None
         if zone in ("laptop","screen","monitor","unknown",""):
-            shot=self.screen.capture_jpeg()
+            shot=await asyncio.to_thread(self.screen.capture_jpeg)
             if shot:
                 content.append({"type":"image_url","image_url":{"url":self.screen.data_url(shot)}})
                 x,y=gaze.get("x"),gaze.get("y")
                 if x is not None and y is not None:
-                    crop=self.screen.crop_from_normalized(shot,x,y)
+                    crop=await asyncio.to_thread(self.screen.crop_from_normalized,shot,x,y)
                     if crop:content.append({"type":"image_url","image_url":{"url":self.screen.data_url(crop)}})
         if not shot and not has_source:
             return {"ok":False,"error":"content-required","detail":"برای کتاب/صفحه غیرقابل‌مشاهده باید source context یا snapshot داشته باشم."}
