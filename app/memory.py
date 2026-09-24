@@ -39,14 +39,17 @@ class PolicyEngine:
         pid=policy_id or str(uuid.uuid4());now=int(time.time());c=self.db_factory()
         old=c.execute("select version,created_at from behavior_policies where policy_id=?",(pid,)).fetchone()
         version=int(old["version"])+1 if old else 1;created=int(old["created_at"]) if old else now
+        trig=json.dumps(trigger,ensure_ascii=False);act=json.dumps(action,ensure_ascii=False)
         c.execute("""insert into behavior_policies(policy_id,created_at,updated_at,scope,trigger_json,action_json,priority,enabled,version,source,rationale,supersedes)
                      values(?,?,?,?,?,?,?,?,?,?,?,?)
                      on conflict(policy_id) do update set updated_at=excluded.updated_at,scope=excluded.scope,
                      trigger_json=excluded.trigger_json,action_json=excluded.action_json,priority=excluded.priority,
                      enabled=excluded.enabled,version=excluded.version,source=excluded.source,
                      rationale=excluded.rationale,supersedes=excluded.supersedes""",
-                  (pid,created,now,scope,json.dumps(trigger,ensure_ascii=False),json.dumps(action,ensure_ascii=False),
-                   int(priority),1,version,source,rationale,supersedes))
+                  (pid,created,now,scope,trig,act,int(priority),1,version,source,rationale,supersedes))
+        c.execute("""insert or replace into behavior_policy_history(policy_id,version,recorded_at,scope,trigger_json,action_json,priority,enabled,source,rationale,supersedes)
+                     values(?,?,?,?,?,?,?,?,?,?,?)""",
+                  (pid,version,now,scope,trig,act,int(priority),1,source,rationale,supersedes))
         c.commit();c.close()
         if self.events:self.events.emit("policy.changed",{"policy_id":pid,"scope":scope,"trigger":trigger,"action":action,"priority":priority},source,pid,version)
         return {"ok":True,"policy":self.get(pid)}
@@ -55,7 +58,14 @@ class PolicyEngine:
         now=int(time.time());c=self.db_factory();r=c.execute("select version from behavior_policies where policy_id=?",(policy_id,)).fetchone()
         if not r:c.close();return {"ok":False,"reason":"not-found"}
         version=int(r["version"])+1
-        c.execute("update behavior_policies set enabled=0,updated_at=?,version=? where policy_id=?",(now,version,policy_id));c.commit();c.close()
+        current=c.execute("select * from behavior_policies where policy_id=?",(policy_id,)).fetchone()
+        c.execute("update behavior_policies set enabled=0,updated_at=?,version=? where policy_id=?",(now,version,policy_id))
+        if current:
+            c.execute("""insert or replace into behavior_policy_history(policy_id,version,recorded_at,scope,trigger_json,action_json,priority,enabled,source,rationale,supersedes)
+                         values(?,?,?,?,?,?,?,?,?,?,?)""",
+                      (policy_id,version,now,current["scope"],current["trigger_json"],current["action_json"],
+                       current["priority"],0,source,current["rationale"],current["supersedes"]))
+        c.commit();c.close()
         if self.events:self.events.emit("policy.disabled",{"policy_id":policy_id},source,policy_id,version)
         return {"ok":True,"policy":self.get(policy_id)}
 
@@ -70,6 +80,34 @@ class PolicyEngine:
 
     def resolve(self,context:dict,scope="study"):
         return [p for p in self.list(True) if p["scope"] in (scope,"global","*") and self._matches(p["trigger"],context)]
+
+    def effective(self,context:dict,scope="study"):
+        out={}
+        for p in self.resolve(context,scope):
+            for k,v in p["action"].items():
+                if k not in out:out[k]=v
+        return out
+
+    def history(self,policy_id:str):
+        c=self.db_factory();rows=c.execute("""select * from behavior_policy_history where policy_id=?
+                                             order by version desc""",(policy_id,)).fetchall();c.close()
+        out=[]
+        for r in rows:
+            d=dict(r)
+            try:d["trigger"]=json.loads(d.pop("trigger_json"))
+            except Exception:d["trigger"]={}
+            try:d["action"]=json.loads(d.pop("action_json"))
+            except Exception:d["action"]={}
+            d["enabled"]=bool(d["enabled"]);out.append(d)
+        return out
+
+    def rollback(self,policy_id:str,version:int,source="user"):
+        c=self.db_factory();r=c.execute("""select * from behavior_policy_history where policy_id=? and version=?""",
+                                        (policy_id,int(version))).fetchone();c.close()
+        if not r:return {"ok":False,"reason":"history-version-not-found"}
+        if not bool(r["enabled"]):return self.disable(policy_id,source)
+        return self.add(r["scope"],json.loads(r["trigger_json"]),json.loads(r["action_json"]),
+                        r["priority"],source,"rollback-to-v"+str(version),policy_id,r["supersedes"])
 
     @staticmethod
     def _safe_action(action):
