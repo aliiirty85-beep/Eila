@@ -8,3 +8,4 @@ psutil>=6,<8
 Pillow>=10,<12
 mss>=9,<11
 feedparser>=6,<7
+cryptography>=43,<47
