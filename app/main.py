@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
-import asyncio,json,time,base64
+import asyncio,json,time,base64,socket,threading,os
 from fastapi import FastAPI,Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -124,7 +124,28 @@ class BallStimulusReq(BaseModel):source:str="BallRivalAndroid";event:str;ts:int|
 async def startup():
     bootstrap_spine()
     restore_continuity()
+    start_discovery_responder()
     asyncio.create_task(background_loop())
+
+def start_discovery_responder():
+    if not CFG.get("discovery_enabled",True):return
+    port=int(CFG.get("discovery_port",8766))
+    http_port=int(os.getenv("EILA_PORT","8765"))
+    def worker():
+        try:
+            s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+            s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+            s.bind(("",port));s.settimeout(1.0)
+            while True:
+                try:data,addr=s.recvfrom(1024)
+                except socket.timeout:continue
+                if data.strip()!=b"EILA_DISCOVER_V3":continue
+                reply=json.dumps({"service":"eila-spine","protocol":CFG.get("protocol_version",3),
+                                  "http_port":http_port},separators=(",",":")).encode()
+                s.sendto(reply,addr)
+        except Exception as e:
+            STATE["discovery_error"]=f"{type(e).__name__}: {e}"
+    threading.Thread(target=worker,name="eila-discovery",daemon=True).start()
 
 def bootstrap_spine():
     if not SPINE.get("identity"):
