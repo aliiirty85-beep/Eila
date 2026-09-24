@@ -45,5 +45,7 @@
   "spine_replica_interval_minutes": 60,
   "device_event_pull_limit": 200,
   "live_evolution": true,
-  "device_independent_identity": true
+  "device_independent_identity": true,
+  "discovery_port": 8766,
+  "discovery_enabled": true
 }
