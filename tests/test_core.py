@@ -126,3 +126,82 @@ def test_maintenance_safe_tick_creates_backup():
         assert out["database"]["ok"]
         assert list((Path(td.name)/"backups").glob("eila-*.db"))
     finally:td.cleanup()
+
+
+def test_event_bus_is_idempotent():
+    from app.sync import EventBus
+    td,s,_=env()
+    try:
+        e=EventBus(s.connect)
+        one=e.emit("test.event",{"x":1},event_id="same-id")
+        two=e.ingest({"event_id":"same-id","kind":"test.event","payload":{"x":99},"source_device":"phone"})
+        assert one["event_id"]=="same-id"
+        assert two["ok"] and two["duplicate"]
+        assert len(e.list_since(0,20))==1
+    finally:td.cleanup()
+
+def test_spine_revision_conflict_and_snapshot():
+    from app.sync import EventBus,SpineState
+    td,s,_=env()
+    try:
+        e=EventBus(s.connect);sp=SpineState(s.connect,e)
+        a=sp.set("identity",{"name":"Eila"},"phone",expected_revision=0)
+        assert a["ok"] and a["revision"]==1
+        conflict=sp.set("identity",{"name":"Other"},"laptop",expected_revision=0)
+        assert not conflict["ok"] and conflict["reason"]=="revision-conflict"
+        assert sp.snapshot()["identity"]["value"]["name"]=="Eila"
+    finally:td.cleanup()
+
+def test_device_replacement_preserves_identity_but_requests_recalibration():
+    from app.sync import EventBus
+    from app.device_hub import DeviceHub
+    td,s,_=env()
+    try:
+        hub=DeviceHub(s.connect,15,EventBus(s.connect))
+        hub.heartbeat("old-laptop","laptop","Old",{"screen":True},{},hardware_fingerprint="old-hw")
+        out=hub.replace("old-laptop","new-laptop","laptop","New",{"screen":True},"new-hw")
+        assert out["ok"]
+        assert "gaze-screen-geometry" in out["requires_recalibration"]
+        assert hub.get("old-laptop")["status"]=="retired"
+        assert hub.get("new-laptop")["status"]=="active"
+    finally:td.cleanup()
+
+def test_live_policy_is_versioned_and_safe():
+    from app.sync import EventBus
+    from app.memory import PolicyEngine
+    td,s,_=env()
+    try:
+        p=PolicyEngine(s.connect,EventBus(s.connect))
+        ok=p.add("study",{"risk":"high"},{"intervention.style":"duel"},70)
+        assert ok["ok"] and ok["policy"]["version"]==1
+        bad=p.add("global",{},{"filesystem.delete":"all"},99)
+        assert not bad["ok"]
+        assert p.resolve({"risk":"high"},"study")
+    finally:td.cleanup()
+
+def test_learning_model_schedules_fast_repair_after_error():
+    from app.learning import LearningModel
+    td,s,_=env()
+    try:
+        m=LearningModel(s.connect)
+        now=1_700_000_000
+        out=m.observe("زیست/تنفس",False,"concept-gap",now=now)
+        assert out["repair_due"]==now+15*60
+        due=m.due_reviews(now+15*60)
+        assert due and due[0]["reason"]=="repair-retest"
+        assert m.errors()[0]["error_type"]=="concept-gap"
+    finally:td.cleanup()
+
+def test_sync_offer_rejects_wrong_protocol_and_deduplicates_events():
+    from app.sync import SyncManager,EventBus,SpineState
+    td,s,_=env()
+    try:
+        mem=MemoryManager(s.connect);events=EventBus(s.connect);sp=SpineState(s.connect,events)
+        sync=SyncManager(s.connect,mem,3,events,sp)
+        bad=sync.store_offer("phone",{"protocol_version":2})
+        assert not bad["ok"] and bad["reason"]=="protocol-mismatch"
+        event={"event_id":"abc","kind":"device.test","payload":{"ok":True},"source_device":"phone"}
+        snap={"protocol_version":3,"events_tail":[event,event]}
+        good=sync.store_offer("phone",snap)
+        assert good["ok"] and good["events_applied"]==1 and good["duplicates"]==1
+    finally:td.cleanup()
