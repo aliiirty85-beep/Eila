@@ -16,8 +16,19 @@ class QuestionEngine:
             "\"question\":\"...\",\"expected\":\"\",\"seconds\":60,\"topic\":\"...\",\"hook\":\"...\",\"confidence\":0.8}"
         )
         content=[{"type":"text","text":prompt+"\nGaze summary: "+json.dumps(gaze,ensure_ascii=False)}]
-        has_source=bool(active and active.get("content"))
-        if has_source:content.append({"type":"text","text":"Active source context:\n"+active["content"][:12000]})
+        has_source=False
+        if active and active.get("content"):
+            has_source=True
+            content.append({"type":"text","text":"Active source context:\n"+active["content"][:12000]})
+        if active and active.get("kind")=="image" and active.get("ref"):
+            try:
+                from pathlib import Path
+                page=Path(active["ref"]).read_bytes()
+                if page:
+                    has_source=True
+                    content.append({"type":"image_url","image_url":{"url":self.screen.data_url(page)}})
+            except Exception:
+                pass
         shot=None
         if zone in ("laptop","screen","monitor","unknown",""):
             shot=self.screen.capture_jpeg()

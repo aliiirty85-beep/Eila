@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
-import asyncio,json,time
+import asyncio,json,time,base64
 from fastapi import FastAPI,Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -100,6 +100,7 @@ class GazeReq(BaseModel):
     max_fixation_seconds:float=0;jump_rate:float|None=None;event:str="";timestamp_ms:int|None=None
 class ChatReq(BaseModel):message:str
 class ContextReq(BaseModel):kind:str="text";title:str="";content:str="";ref:str=""
+class ImageContextReq(BaseModel):title:str="صفحه کتاب";data_url:str
 class AttentionReq(BaseModel):score:float=Field(...,ge=0,le=100);screen_change:float|None=None;input_recent:bool|None=None
 class ScoreReq(BaseModel):delta:float
 class MemoryReq(BaseModel):category:str;key:str;value:str;confidence:float=.6;source:str="manual"
@@ -260,6 +261,16 @@ def attention(r:AttentionReq):
 
 @app.post("/api/context/current")
 def set_context(r:ContextReq):return {"ok":True,"id":CONTEXT.set(r.kind,r.title,r.content,r.ref)}
+
+@app.post("/api/context/image")
+def set_context_image(r:ImageContextReq):
+    raw=r.data_url.split(",",1)[-1]
+    try:data=base64.b64decode(raw,validate=True)
+    except Exception:return {"ok":False,"reason":"bad-base64"}
+    if len(data)>8_000_000:return {"ok":False,"reason":"image-too-large"}
+    path=DATA/"current_page.jpg";path.write_bytes(data)
+    return {"ok":True,"id":CONTEXT.set("image",r.title,"",str(path)),"bytes":len(data)}
+
 @app.get("/api/context/current")
 def get_context():return CONTEXT.current() or {}
 
