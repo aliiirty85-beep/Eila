@@ -9,11 +9,20 @@ class DeviceHub:
         now=int(time.time());cap=capabilities or {};st=state or {}
         existing=self.get(device_id)
         joined=int(existing.get("joined_at") or 0) if existing else now
-        rev=int(existing.get("device_revision") or 0)+1 if existing else 1
+        old_fp=(existing or {}).get("hardware_fingerprint","")
+        fp=hardware_fingerprint or old_fp
+        structural_changed=(
+            existing is None or
+            (existing or {}).get("kind")!=kind or
+            (existing or {}).get("name")!=name or
+            (existing or {}).get("capabilities",{})!=cap or
+            (fp and fp!=old_fp) or
+            (existing or {}).get("status")=="retired"
+        )
+        rev=(int((existing or {}).get("device_revision") or 0)+1) if structural_changed else int((existing or {}).get("device_revision") or 1)
         payload={"device_id":device_id,"kind":kind,"name":name,"last_seen":now,
                  "capabilities":cap,"state":st,"status":"active",
-                 "hardware_fingerprint":hardware_fingerprint or (existing or {}).get("hardware_fingerprint",""),
-                 "joined_at":joined,"device_revision":rev}
+                 "hardware_fingerprint":fp,"joined_at":joined,"device_revision":rev}
         self.live[device_id]=payload
         c=self.db_factory()
         c.execute("""insert into devices(device_id,kind,name,last_seen,capabilities,state,joined_at,status,hardware_fingerprint,device_revision)
@@ -23,9 +32,12 @@ class DeviceHub:
                      hardware_fingerprint=case when excluded.hardware_fingerprint='' then devices.hardware_fingerprint else excluded.hardware_fingerprint end,
                      device_revision=excluded.device_revision""",
                   (device_id,kind,name,now,json.dumps(cap,ensure_ascii=False),json.dumps(st,ensure_ascii=False),
-                   joined,"active",payload["hardware_fingerprint"],rev))
+                   joined,"active",fp,rev))
         c.commit();c.close()
-        if self.events:self.events.emit("device.heartbeat",{"kind":kind,"name":name,"capabilities":cap},device_id,device_id,rev)
+        if self.events and structural_changed:
+            event_kind="device.joined" if existing is None else "device.capabilities.changed"
+            self.events.emit(event_kind,{"kind":kind,"name":name,"capabilities":cap,"hardware_fingerprint":fp},
+                             device_id,device_id,rev)
         return payload
 
     def ingest_gaze(self,device_id:str,sample:dict):
