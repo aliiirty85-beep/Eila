@@ -2,7 +2,7 @@ name: Check Eila Core
 on:
   workflow_dispatch:
   push:
-    branches: [ main, legend-v2 ]
+    branches: [ main, legend-v2, eila-spine-v3 ]
     paths:
       - 'app/**'
       - 'tests/**'
