@@ -48,7 +48,11 @@ class PageCaptureActivity:AppCompatActivity(){
                 val bmp=if(src.width>maxW){val h=(src.height*(maxW.toFloat()/src.width)).toInt();Bitmap.createScaledBitmap(src,maxW,h,true)}else src
                 val out=ByteArrayOutputStream();bmp.compress(Bitmap.CompressFormat.JPEG,76,out);val data=Base64.encodeToString(out.toByteArray(),Base64.NO_WRAP)
                 val r=EilaApi(this).post("/api/context/image",JSONObject().put("title","صفحه کتاب").put("data_url","data:image/jpeg;base64,"+data))
-                runOnUiThread{status.text=if(r?.optBoolean("ok")==true)"صفحه ثبت شد ✓ حالا Gaze می‌تواند سؤال را به همین صفحه وصل کند.":"آپلود صفحه ناموفق بود؛ اتصال ایلا را بررسی کن.";restartGaze()}
+                val message=if(r?.optBoolean("ok")==true) "صفحه ثبت شد ✓ حالا Gaze می‌تواند سؤال را به همین صفحه وصل کند." else "آپلود صفحه ناموفق بود؛ اتصال ایلا را بررسی کن."
+                runOnUiThread{
+                    status.text=message
+                    restartGaze()
+                }
             }catch(e:Exception){runOnUiThread{status.text="پردازش عکس ناموفق بود.";restartGaze()}}
         }.start()
     }
