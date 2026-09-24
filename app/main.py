@@ -97,7 +97,7 @@ class FeedbackReq(BaseModel):
 class ReturnReq(BaseModel):text:str="برگشت به مطالعه";minutes:float|None=None;due_at:int|None=None
 class AckReq(BaseModel):contract_id:int|None=None
 class DeviceReq(BaseModel):
-    device_id:str;kind:str="android";name:str=""
+    device_id:str;kind:str="android";name:str="";hardware_fingerprint:str=""
     capabilities:dict=Field(default_factory=dict);state:dict=Field(default_factory=dict)
 class GazeReq(BaseModel):
     device_id:str;zone:str="unknown";quality:float=.5;x:float|None=None;y:float|None=None
@@ -281,7 +281,7 @@ def return_start(r:ReturnReq):
 def return_ack(r:AckReq):return RETURNS.acknowledge(r.contract_id)
 
 @app.post("/api/device/heartbeat")
-def heartbeat(r:DeviceReq):return HUB.heartbeat(r.device_id,r.kind,r.name,r.capabilities,r.state)
+def heartbeat(r:DeviceReq):return HUB.heartbeat(r.device_id,r.kind,r.name,r.capabilities,r.state,r.hardware_fingerprint)
 
 @app.get("/api/devices")
 def devices():return {"items":HUB.devices(include_retired=True),"capabilities":HUB.capability_report()}
