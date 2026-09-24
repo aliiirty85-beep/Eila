@@ -296,3 +296,39 @@ def test_schema_v4_to_v5_creates_spine_tables_and_device_columns():
         assert {"status","retired_at","hardware_fingerprint","device_revision"}<=cols
         assert version=="5"
     finally:td.cleanup()
+
+
+def test_legacy_v2_snapshot_migrates_into_spine_v3():
+    from app.sync import SyncManager,EventBus,SpineState
+    td,s,_=env()
+    try:
+        mem=MemoryManager(s.connect);events=EventBus(s.connect);sp=SpineState(s.connect,events)
+        sync=SyncManager(s.connect,mem,3,events,sp)
+        snap={
+            "protocol_version":2,
+            "session":{"session_id":77,"goal":"شیمی","plan":"فصل ۱"},
+            "microgoal":{"id":9,"instruction":"تست ۳"},
+            "return_contract":{"id":2,"due_at":1700000300,"text":"برگشت"},
+            "memory":[{"category":"behavior","key":"pref","value":"short","confidence":.8}]
+        }
+        out=sync.store_offer("phone",snap)
+        assert out["ok"] and out["legacy_import"] and out["memory_imported"]==1
+        assert sp.get("session")["value"]["goal"]=="شیمی"
+        assert sp.get("microgoal")["value"]["instruction"]=="تست ۳"
+        assert mem.relevant()[0]["key"]=="pref"
+    finally:td.cleanup()
+
+def test_encrypted_replica_roundtrip():
+    from app.sync import SyncManager,EventBus,SpineState
+    td,s,_=env()
+    try:
+        mem=MemoryManager(s.connect);events=EventBus(s.connect);sp=SpineState(s.connect,events)
+        sync=SyncManager(s.connect,mem,3,events,sp)
+        key=sync.generate_replica_key()
+        path=Path(td.name)/"replica.bin"
+        payload={"protocol_version":3,"spine":{"identity":{"revision":1,"value":{"name":"Eila"}}}}
+        out=sync.write_encrypted_replica(path,key,payload)
+        assert out["ok"] and path.exists()
+        restored=sync.read_encrypted_replica(path,key)
+        assert restored==payload
+    finally:td.cleanup()
