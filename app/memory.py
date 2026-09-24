@@ -145,8 +145,8 @@ class EvolutionEngine:
           "درخواست کاربر برای تغییر رفتار ایلا را ساختاری کن. اگر فقط تغییر رفتار/تنظیم است kind=policy. "
           "اگر نیاز به سنسور، permission، API یا کد جدید دارد kind=capability. "
           "برای policy فقط action keyهای مجاز: microgoal.*, intervention.*, novelty.*, competition.*, flow.*, voice.*, review.*, return.*, firewall.*. "
-          "فقط JSON: {"kind":"policy|capability","scope":"study|global","trigger":{},"action":{},"
-          ""priority":50,"rationale":"...","capability_spec":{}}. متن: "+text
+          'فقط JSON: {"kind":"policy|capability","scope":"study|global","trigger":{},"action":{},'
+          '"priority":50,"rationale":"...","capability_spec":{}}. متن: '+text
         )
         r=await self.ai.ask_json("deep",[{"role":"user","content":prompt}],max_tokens=500)
         if not r.get("ok"):return {"ok":False,"reason":"ai-unavailable","detail":r.get("error")}
