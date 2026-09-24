@@ -11,14 +11,10 @@
     <application android:allowBackup="true" android:label="Eila Companion" android:theme="@style/Theme.Eila" android:usesCleartextTraffic="true">
         <activity android:name=".CalibrationActivity" android:screenOrientation="portrait"/>
         <activity android:name=".MainActivity" android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN"/>
-                <category android:name="android.intent.category.LAUNCHER"/>
-            </intent-filter>
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
         </activity>
         <service android:name=".GazeService" android:exported="false" android:foregroundServiceType="camera|dataSync"/>
-        <receiver android:name=".BootReceiver" android:exported="false">
-            <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/></intent-filter>
-        </receiver>
+        <receiver android:name=".BootReceiver" android:exported="false"><intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/></intent-filter></receiver>
+        <receiver android:name=".ReturnActionReceiver" android:exported="false"/>
     </application>
 </manifest>
