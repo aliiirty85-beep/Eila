@@ -28,6 +28,8 @@ from .future_engine import FutureEngine
 from .intent_router import IntentRouter
 from .firewall import StudyFirewall
 from .sync import SyncManager
+from .desktop_sensors import DesktopSensors
+from .attention_fusion import AttentionFusion
 
 BASE=Path(__file__).resolve().parent.parent
 DATA=BASE/"data";DATA.mkdir(exist_ok=True)
@@ -48,7 +50,7 @@ MICRO=MicroGoalEngine(db,CFG.get("microgoal_default_seconds",60),CFG.get("microg
 RETURNS=ReturnContractManager(db,BUS,CFG);FOCUS=FocusEngine(CFG);PULSE=LearningPulse(db);INTEGRITY=StudyIntegrity();MEM=MemoryManager(db)
 CONTEXT=ContextRegistry(db);SCREEN=ScreenContext();QUESTIONS=QuestionEngine(AI,SCREEN,CONTEXT);WEB=WebBrain(db,AI,BASE,CFG)
 RIVAL=RivalEngine(db,CFG.get("competition_target_multiplier",1.07));FUTURE=FutureEngine();INTENTS=IntentRouter();FIREWALL=StudyFirewall(db)
-SYNC=SyncManager(db,MEM,CFG.get("protocol_version",2))
+SYNC=SyncManager(db,MEM,CFG.get("protocol_version",2));DESKTOP=DesktopSensors();FUSION=AttentionFusion()
 
 CURRENT={"session_id":None,"goal":"","plan":"","started_at":None}
 STATE={"attention_score":50.0,"attention":"unknown","flow":False,"risk":{"level":"low","risk":0},"phase":"IDLE","last_intervention":"",
@@ -118,13 +120,25 @@ async def background_loop():
     global LAST_BACKUP
     while True:
         try:
-            RETURNS.tick();MICRO.tick();await maybe_autogoal();await maybe_web_brain()
+            RETURNS.tick();MICRO.tick();auto_desktop_attention();await maybe_autogoal();await maybe_web_brain()
             now=time.time();interval=float(CFG.get("backup_interval_minutes",30))*60
             if now-LAST_BACKUP>=interval:
                 STORAGE.backup(DATA/"backups",CFG.get("backup_keep",14));LAST_BACKUP=now
         except Exception as e:
             STATE["last_error"]=f"{type(e).__name__}: {e}"
         await asyncio.sleep(max(2,int(CFG.get("verdict_interval_seconds",5))))
+
+def auto_desktop_attention():
+    if not CURRENT["session_id"]:return
+    sample=DESKTOP.sample()
+    _,gaze=HUB.primary_gaze()
+    fused=FUSION.score(gaze,sample)
+    STATE["active_window"]=sample.get("active_window","")
+    STATE["active_process"]=sample.get("process","")
+    STATE["screen_change"]=sample.get("screen_change")
+    STATE["input_recent"]=sample.get("input_recent")
+    STATE["sensor_confidence"]=fused.get("confidence")
+    attention(AttentionReq(score=fused["score"],screen_change=sample.get("screen_change"),input_recent=sample.get("input_recent")))
 
 async def maybe_web_brain():
     if not WEB.running:await WEB.run_once(force=False)
