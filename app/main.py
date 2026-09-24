@@ -123,8 +123,22 @@ class BallStimulusReq(BaseModel):source:str="BallRivalAndroid";event:str;ts:int|
 @app.on_event("startup")
 async def startup():
     bootstrap_spine()
+    ensure_core_node()
     restore_continuity()
     asyncio.create_task(background_loop())
+
+def ensure_core_node():
+    fingerprint="|".join([platform.system(),platform.release(),platform.machine(),socket.gethostname()])
+    saved=STORAGE.get_meta("core_node_identity",{}) or {}
+    if saved.get("hardware_fingerprint")!=fingerprint:
+        saved={"device_id":"core-"+str(uuid.uuid4()),"hardware_fingerprint":fingerprint}
+        STORAGE.set_meta("core_node_identity",saved)
+    kind=os.getenv("EILA_NODE_KIND","laptop" if platform.system().lower()=="windows" else "server")
+    caps={"core":True,"sync":True,"desktop_sensors":True,"screen_context":True,
+          "local_ai_router":True,"maintenance":True,"backup":True}
+    return HUB.heartbeat(saved["device_id"],kind,socket.gethostname(),caps,
+                         {"version":CFG.get("version"),"protocol":CFG.get("protocol_version",3)},
+                         saved["hardware_fingerprint"])
 
 def bootstrap_spine():
     if not SPINE.get("identity"):
@@ -142,7 +156,7 @@ async def background_loop():
     global LAST_BACKUP
     while True:
         try:
-            RETURNS.tick();MICRO.tick();STATE["activity_context"]=VERIFIER.status();auto_desktop_attention();await maybe_autogoal();await maybe_web_brain();STATE["maintenance"]=MAINT.safe_tick(HUB.devices(),AI.health());await MAINT.propose_if_needed(health())
+            ensure_core_node();RETURNS.tick();MICRO.tick();STATE["activity_context"]=VERIFIER.status();auto_desktop_attention();await maybe_autogoal();await maybe_web_brain();STATE["maintenance"]=MAINT.safe_tick(HUB.devices(),AI.health());await MAINT.propose_if_needed(health())
             now=time.time();interval=float(CFG.get("backup_interval_minutes",30))*60
             if now-LAST_BACKUP>=interval:
                 STORAGE.backup(DATA/"backups",CFG.get("backup_keep",14));LAST_BACKUP=now
@@ -173,7 +187,7 @@ def policy_actions(kind="study"):
 def operating_mode():
     devices=HUB.devices()
     online=[d for d in devices if not d.get("stale") and d.get("status","active")!="retired"]
-    laptop=any(d.get("kind") in ("laptop","desktop","windows") for d in online)
+    laptop=any(d.get("kind") in ("laptop","desktop","windows","server","core") and (d.get("capabilities") or {}).get("core") for d in online)
     mobile=any(d.get("kind") in ("android","phone","tablet") for d in online)
     configured_ai=any(bool(v) for v in AI.health().get("models",{}).values())
     if laptop and configured_ai:return {"level":"FULL","description":"laptop compute + configured AI + replicated spine"}
