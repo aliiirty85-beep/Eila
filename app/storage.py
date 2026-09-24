@@ -2,7 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import sqlite3,time,json,shutil
 
-SCHEMA_VERSION=3
+SCHEMA_VERSION=4
 
 class Storage:
     def __init__(self,path:Path):
@@ -38,6 +38,27 @@ class Storage:
         create table if not exists rival_rounds(id integer primary key autoincrement,session_id integer,round_index integer,started_at integer not null,ended_at integer,user_score real default 0,rival_score real default 0,result text default 'open');
         create table if not exists later_inbox(id integer primary key autoincrement,created_at integer not null,text text not null,reason text default '',status text default 'pending');
         create table if not exists device_snapshots(device_id text primary key,received_at integer not null,snapshot text not null);
+        create table if not exists context_claims(
+          id integer primary key autoincrement,created_at integer not null,activity text not null,
+          claimed_until integer,source text default 'user',status text default 'active',
+          confidence real default 0,verdict text default 'unverified',details text default '{}'
+        );
+        create table if not exists context_evidence(
+          id integer primary key autoincrement,ts integer not null,device_id text default '',
+          kind text not null,payload text default '{}'
+        );
+        create table if not exists maintenance_events(
+          id integer primary key autoincrement,ts integer not null,kind text not null,
+          severity text default 'info',detail text default '',repaired integer default 0
+        );
+        create table if not exists maintenance_proposals(
+          id integer primary key autoincrement,created_at integer not null,title text not null,
+          rationale text default '',status text default 'proposed',evidence text default '{}'
+        );
+        create table if not exists stimulus_events(
+          id integer primary key autoincrement,ts integer not null,source text not null,
+          event text not null,payload text default '{}'
+        );
         """)
         self._column(c,"sessions","summary","text default ''")
         for name,ddl in (("answer","text default ''"),("context_ref","text default ''"),("engagement_style","text default ''"),("display_instruction","text default ''"),("salience","text default ''")):

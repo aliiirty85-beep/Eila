@@ -1,5 +1,5 @@
 {
-  "version": "2.0-LTS",
+  "version": "2.1-LTS",
   "protocol_version": 2,
   "verdict_interval_seconds": 5,
   "microgoal_default_seconds": 60,
@@ -10,7 +10,12 @@
   "device_stale_seconds": 15,
   "intervention_budget_per_5min": 4,
   "flow_protection_min_attention": 78,
-  "return_escalation_seconds": [0, 30, 90, 180],
+  "return_escalation_seconds": [
+    0,
+    30,
+    90,
+    180
+  ],
   "backup_interval_minutes": 30,
   "backup_keep": 14,
   "web_brain_interval_hours": 20,
@@ -22,7 +27,19 @@
     "vision_models_env": "EILA_VISION_MODELS",
     "judge_models_env": "EILA_JUDGE_MODELS",
     "research_models_env": "EILA_RESEARCH_MODELS",
-    "fallback_models": ["ollama/qwen2.5:7b"],
-    "vision_fallback_models": ["ollama/qwen2.5vl:7b"]
+    "fallback_models": [
+      "ollama/qwen2.5:7b"
+    ],
+    "vision_fallback_models": [
+      "ollama/qwen2.5vl:7b"
+    ]
+  },
+  "maintenance_interval_minutes": 30,
+  "maintenance_proposal_interval_hours": 24,
+  "activity_claim_defaults_minutes": {
+    "driving": 60,
+    "eating": 30,
+    "sleeping": 480,
+    "resting": 30
   }
 }

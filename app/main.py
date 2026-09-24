@@ -30,6 +30,8 @@ from .firewall import StudyFirewall
 from .sync import SyncManager
 from .desktop_sensors import DesktopSensors
 from .attention_fusion import AttentionFusion
+from .context_verifier import ContextVerifier
+from .maintenance import MaintenanceEngine
 
 BASE=Path(__file__).resolve().parent.parent
 DATA=BASE/"data";DATA.mkdir(exist_ok=True)
@@ -51,9 +53,10 @@ RETURNS=ReturnContractManager(db,BUS,CFG);FOCUS=FocusEngine(CFG);PULSE=LearningP
 CONTEXT=ContextRegistry(db);SCREEN=ScreenContext();QUESTIONS=QuestionEngine(AI,SCREEN,CONTEXT);WEB=WebBrain(db,AI,BASE,CFG)
 RIVAL=RivalEngine(db,CFG.get("competition_target_multiplier",1.07));FUTURE=FutureEngine();INTENTS=IntentRouter();FIREWALL=StudyFirewall(db)
 SYNC=SyncManager(db,MEM,CFG.get("protocol_version",2));DESKTOP=DesktopSensors();FUSION=AttentionFusion()
+VERIFIER=ContextVerifier(db,CFG);MAINT=MaintenanceEngine(db,STORAGE,AI,DATA,CFG)
 
 CURRENT={"session_id":None,"goal":"","plan":"","started_at":None}
-STATE={"attention_score":50.0,"attention":"unknown","flow":False,"risk":{"level":"low","risk":0},"phase":"IDLE","last_intervention":"",
+STATE={"activity_context":None,"maintenance":{},"attention_score":50.0,"attention":"unknown","flow":False,"risk":{"level":"low","risk":0},"phase":"IDLE","last_intervention":"",
        "theme":ENG.daily_theme,"learning_pulse":{},"integrity":{},"gaze_device":None,"gaze":None,"devices":[],
        "future":{"now_5s":"—","next_60s":"—","round_10m":"—"}}
 LAST_BACKUP=0.0
@@ -105,6 +108,9 @@ class AttentionReq(BaseModel):score:float=Field(...,ge=0,le=100);screen_change:f
 class ScoreReq(BaseModel):delta:float
 class MemoryReq(BaseModel):category:str;key:str;value:str;confidence:float=.6;source:str="manual"
 class SnapshotReq(BaseModel):device_id:str;snapshot:dict=Field(default_factory=dict)
+class ActivityClaimReq(BaseModel):activity:str;minutes:float|None=None;note:str=""
+class ActivityEvidenceReq(BaseModel):device_id:str="";kind:str="device";facts:dict=Field(default_factory=dict)
+class BallStimulusReq(BaseModel):source:str="BallRivalAndroid";event:str;ts:int|None=None;extra:dict=Field(default_factory=dict)
 
 @app.on_event("startup")
 async def startup():
@@ -121,7 +127,7 @@ async def background_loop():
     global LAST_BACKUP
     while True:
         try:
-            RETURNS.tick();MICRO.tick();auto_desktop_attention();await maybe_autogoal();await maybe_web_brain()
+            RETURNS.tick();MICRO.tick();STATE["activity_context"]=VERIFIER.status();auto_desktop_attention();await maybe_autogoal();await maybe_web_brain();STATE["maintenance"]=MAINT.safe_tick(HUB.devices(),AI.health());await MAINT.propose_if_needed(health())
             now=time.time();interval=float(CFG.get("backup_interval_minutes",30))*60
             if now-LAST_BACKUP>=interval:
                 STORAGE.backup(DATA/"backups",CFG.get("backup_keep",14));LAST_BACKUP=now
@@ -147,6 +153,8 @@ async def maybe_web_brain():
 async def maybe_autogoal():
     global LAST_AUTOGOAL
     if not CURRENT["session_id"] or MICRO.current:return
+    activity=VERIFIER.status()
+    if activity and activity.get("blocks_study"):return
     now=time.time();gaze_device,gaze=HUB.primary_gaze();gaze=gaze or {"zone":"laptop","quality":0.0,"event":""}
     high_value=(gaze.get("event") or "").lower() in {"long_fixation","rapid_revisit","flighty","stuck"} or STATE.get("risk",{}).get("level")=="high"
     interval=8 if high_value else int(CFG.get("screen_vision_interval_seconds",20))
@@ -170,7 +178,7 @@ def root_ui():return FileResponse(BASE/"app"/"static"/"index.html")
 
 @app.get("/api/state")
 def state():
-    STATE["devices"]=HUB.devices();STATE["theme"]=ENG.daily_theme;STATE["microgoal"]=MICRO.public();STATE["return_contract"]=RETURNS.active();STATE["session"]=CURRENT
+    STATE["devices"]=HUB.devices();STATE["activity_context"]=VERIFIER.status();STATE["theme"]=ENG.daily_theme;STATE["microgoal"]=MICRO.public();STATE["return_contract"]=RETURNS.active();STATE["session"]=CURRENT
     rival=RIVAL.ensure_round(CURRENT["session_id"]) if CURRENT["session_id"] else None
     STATE["rival"]=rival
     STATE["future"]=FUTURE.forecast(float(STATE.get("attention_score",50)),STATE.get("gaze"),MICRO.public(),STATE.get("risk"),bool(STATE.get("flow")),rival)
@@ -239,7 +247,11 @@ def command_ack(device_id:str,command_id:int):BUS.ack(command_id,device_id);retu
 @app.post("/api/attention")
 def attention(r:AttentionReq):
     score=float(r.score);FOCUS.observe(score);_,gaze=HUB.primary_gaze();risk=FOCUS.risk(score,gaze,MICRO.public());flow=FOCUS.flow_protected(score,gaze,MICRO.public());pulse=PULSE.score(score);integrity=INTEGRITY.assess(score,gaze,r.screen_change,r.input_recent,pulse)
-    phase=FOCUS.phase(score);intervention="";kind="";critical=score<28 or float((gaze or {}).get("away_streak_seconds") or 0)>=8
+    phase=FOCUS.phase(score);intervention="";kind="";activity=VERIFIER.status()
+    if activity and activity.get("activity")=="driving" and activity.get("confidence",0)>=.35:
+        STATE.update({"attention_score":score,"phase":"DRIVING","last_intervention":"","activity_context":activity})
+        return STATE
+    critical=score<28 or float((gaze or {}).get("away_streak_seconds") or 0)>=8
     if not flow and FOCUS.can_intervene(critical):
         if critical:intervention="ایلا: RETURN. فقط همین مأموریت.";kind="critical-return"
         elif risk["level"]=="high":intervention="ایلا: افت نزدیکه؛ انتخاب اضافه نداریم. همین micro-goal را تحویل بده.";kind="prefailure"
@@ -311,9 +323,52 @@ def sync_offer(r:SnapshotReq):return SYNC.store_offer(r.device_id,r.snapshot)
 @app.post("/api/sync/restore-memory/{device_id}")
 def sync_restore(device_id:str):return SYNC.restore_memory_if_empty(device_id)
 
+@app.post("/api/activity/claim")
+def activity_claim(r:ActivityClaimReq):
+    out=VERIFIER.claim(r.activity,r.minutes,r.note)
+    STATE["activity_context"]=out
+    if out.get("activity")=="driving":
+        BUS.queue("clear_microgoal",{},ttl_seconds=300)
+    return out
+
+@app.post("/api/activity/evidence")
+def activity_evidence(r:ActivityEvidenceReq):
+    out=VERIFIER.evidence(r.device_id,r.facts,r.kind);STATE["activity_context"]=VERIFIER.status();return out
+
+@app.get("/api/activity/status")
+def activity_status():return VERIFIER.status() or {"active":False}
+
+@app.post("/api/activity/finish")
+def activity_finish():STATE["activity_context"]=None;return VERIFIER.finish()
+
+@app.post("/api/stimulus/ball")
+def ball_stimulus(r:BallStimulusReq):
+    c=db();c.execute("insert into stimulus_events(ts,source,event,payload) values(?,?,?,?)",
+      (int(r.ts/1000) if r.ts and r.ts>10_000_000_000 else int(r.ts or time.time()),r.source,r.event,json.dumps(r.extra,ensure_ascii=False)));c.commit();c.close()
+    return {"ok":True}
+
+@app.get("/api/maintenance/status")
+def maintenance_status():return MAINT.status()
+
+@app.post("/api/maintenance/audit")
+async def maintenance_audit():
+    report=MAINT.safe_tick(HUB.devices(),AI.health());proposal=await MAINT.propose_if_needed(health());return {"report":report,"proposal":proposal}
+
 @app.post("/api/chat")
 async def chat(r:ChatReq):
-    msg=r.message.strip();local=INTENTS.local(msg)
+    msg=r.message.strip()
+    activity=VERIFIER.parse_claim(msg)
+    if activity:
+        out=VERIFIER.claim(activity,note=msg)
+        STATE["activity_context"]=out
+        if activity=="driving":
+            BUS.queue("clear_microgoal",{},ttl_seconds=300)
+            return {"text":"رانندگی را ثبت کردم. تا وقتی احتمال رانندگی وجود دارد مأموریت بصری و فشار مطالعاتی نمی‌دهم؛ راستی‌آزمایی فقط با سنسورهای passive انجام می‌شود.","action":"activity-claim","activity":out}
+        if activity=="sleeping":
+            return {"text":"خواب را ثبت کردم. ایلا مزاحمت مطالعاتی را متوقف می‌کند و فقط با شواهد passive وضعیت را می‌سنجد.","action":"activity-claim","activity":out}
+        if activity=="eating":
+            return {"text":"زمان غذا ثبت شد. خوردن غذا از روی گوشی به‌طور قابل‌اعتماد قابل اثبات نیست؛ اگر لازم باشد فقط با شواهد اختیاری و غیرمداوم بررسی می‌کنم.","action":"activity-claim","activity":out}
+    local=INTENTS.local(msg)
     if local["intent"]=="return_contract":
         c=RETURNS.create(msg,minutes=local["minutes"])
         return {"text":f"باشه. {local['minutes']:g} دقیقه ثبت شد؛ اگر برنگردی خودم پیگیری می‌کنم.","action":"return_contract","contract":c}
