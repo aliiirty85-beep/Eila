@@ -75,7 +75,7 @@ Gaze فقط سیگنال احتمالی است؛ ذهن‌خوانی نکن.
 پاسخ‌ها در Focus Mode کوتاه و عملی باشند.
 """+EILA_CONSTITUTION)
 
-app=FastAPI(title="Eila Legend v2.0 LTS")
+app=FastAPI(title="Eila Spine v3")
 
 @app.middleware("http")
 async def lan_auth(request:Request,call_next):
@@ -113,6 +113,7 @@ class SnapshotReq(BaseModel):device_id:str;snapshot:dict=Field(default_factory=d
 class SpineSetReq(BaseModel):value:object;source_device:str="user";expected_revision:int|None=None
 class EventReq(BaseModel):event:dict=Field(default_factory=dict)
 class PolicyReq(BaseModel):scope:str="study";trigger:dict=Field(default_factory=dict);action:dict=Field(default_factory=dict);priority:int=50;rationale:str=""
+class PolicyRollbackReq(BaseModel):version:int
 class EvolveReq(BaseModel):text:str
 class DeviceReplaceReq(BaseModel):old_device_id:str;new_device_id:str;kind:str="laptop";name:str="";capabilities:dict=Field(default_factory=dict);hardware_fingerprint:str=""
 class ActivityClaimReq(BaseModel):activity:str;minutes:float|None=None;note:str=""
@@ -164,6 +165,22 @@ def auto_desktop_attention():
 async def maybe_web_brain():
     if not WEB.running:await WEB.run_once(force=False)
 
+def policy_actions(kind="study"):
+    context={"risk":STATE.get("risk",{}).get("level"),"phase":STATE.get("phase"),"kind":kind,
+             "attention":STATE.get("attention"),"flow":bool(STATE.get("flow"))}
+    return POLICIES.effective(context,"study")
+
+def operating_mode():
+    devices=HUB.devices()
+    online=[d for d in devices if not d.get("stale") and d.get("status","active")!="retired"]
+    laptop=any(d.get("kind") in ("laptop","desktop","windows") for d in online)
+    mobile=any(d.get("kind") in ("android","phone","tablet") for d in online)
+    configured_ai=any(bool(v) for v in AI.health().get("models",{}).values())
+    if laptop and configured_ai:return {"level":"FULL","description":"laptop compute + configured AI + replicated spine"}
+    if mobile and configured_ai:return {"level":"ONLINE_MOBILE","description":"mobile node + configured online/local route"}
+    if mobile:return {"level":"SURVIVAL","description":"mobile guard, cached state and return contracts"}
+    return {"level":"CORE_ONLY","description":"core state available; no fresh device heartbeat"}
+
 async def maybe_autogoal():
     global LAST_AUTOGOAL
     if not CURRENT["session_id"] or MICRO.current:return
@@ -176,16 +193,21 @@ async def maybe_autogoal():
     LAST_AUTOGOAL=now
     result=await QUESTIONS.from_gaze(gaze,deep=high_value)
     if result.get("ok"):
-        d=result["data"];style=ENG.choose_style(d.get("kind","study"))
-        w=ENG.wrap(d.get("instruction") or d.get("question") or "همین بخش",style,d.get("seconds",60),MICRO.streak,d.get("hook",""))
+        d=result["data"];actions=policy_actions(d.get("kind","study"))
+        forced=actions.get("intervention.style") or actions.get("novelty.style")
+        allowed={"duel","mystery","boss","precision","sprint","teachback","streak","comeback"}
+        style=forced if forced in allowed else ENG.choose_style(d.get("kind","study"))
+        secs=d.get("seconds",60)
+        if isinstance(actions.get("microgoal.seconds"),(int,float)):secs=max(20,min(180,int(actions["microgoal.seconds"])))
+        w=ENG.wrap(d.get("instruction") or d.get("question") or "همین بخش",style,secs,MICRO.streak,d.get("hook",""))
         g=MICRO.start(CURRENT["session_id"],d.get("instruction") or d.get("question") or "همین بخش",d.get("kind","study"),d.get("question",""),
-                      d.get("expected",""),"gaze-ai" if high_value else "context-ai",d.get("seconds",60),style,w["display_instruction"],w["salience"],d.get("topic",""))
+                      d.get("expected",""),"gaze-ai" if high_value else "context-ai",secs,style,w["display_instruction"],w["salience"],d.get("topic",""))
     else:
         style=ENG.choose_style("recall")
         instruction="کوچک‌ترین بخش بعدی جلویت را بخوان؛ بعد بدون نگاه در یک جمله توضیحش بده."
         w=ENG.wrap(instruction,style,45,MICRO.streak)
         g=MICRO.start(CURRENT["session_id"],instruction,"recall","در یک جمله چه فهمیدی؟","","local-fallback",45,style,w["display_instruction"],w["salience"],"")
-    BUS.queue("microgoal",g,ttl_seconds=900)
+    SPINE.set("microgoal",g,"core");BUS.queue("microgoal",g,ttl_seconds=900)
 
 @app.get("/")
 def root_ui():return FileResponse(BASE/"app"/"static"/"index.html")
@@ -196,13 +218,14 @@ def state():
     rival=RIVAL.ensure_round(CURRENT["session_id"]) if CURRENT["session_id"] else None
     STATE["rival"]=rival
     STATE["future"]=FUTURE.forecast(float(STATE.get("attention_score",50)),STATE.get("gaze"),MICRO.public(),STATE.get("risk"),bool(STATE.get("flow")),rival)
+    STATE["operating_mode"]=operating_mode();STATE["effective_policies"]=policy_actions(MICRO.public().get("kind","study") if MICRO.public() else "study")
     return STATE
 
 @app.get("/api/health")
 def health():
     return {"ok":STORAGE.integrity().get("ok",False),"database":STORAGE.integrity(),"ai":AI.health(),"screen_error":SCREEN.last_error,
             "devices":HUB.devices(),"web_brain":{"last_run":WEB.last_run,"last_error":WEB.last_error},
-            "protocol_version":CFG.get("protocol_version",2)}
+            "protocol_version":CFG.get("protocol_version",3),"operating_mode":operating_mode()}
 
 @app.post("/api/session/start")
 def start_session(r:StartReq):
@@ -225,7 +248,11 @@ def stop_session():
 @app.post("/api/micro/start")
 def micro_start(r:MicroReq):
     if not CURRENT["session_id"]:return {"ok":False,"reason":"start-session-first"}
-    style=ENG.choose_style(r.kind);secs=r.seconds or CFG.get("microgoal_default_seconds",60);w=ENG.wrap(r.instruction,style,secs,MICRO.streak,r.hook)
+    actions=policy_actions(r.kind);forced=actions.get("intervention.style") or actions.get("novelty.style")
+    allowed={"duel","mystery","boss","precision","sprint","teachback","streak","comeback"}
+    style=forced if forced in allowed else ENG.choose_style(r.kind)
+    secs=r.seconds or actions.get("microgoal.seconds") or CFG.get("microgoal_default_seconds",60)
+    secs=max(20,min(180,int(secs)));w=ENG.wrap(r.instruction,style,secs,MICRO.streak,r.hook)
     g=MICRO.start(CURRENT["session_id"],r.instruction,r.kind,r.question,r.expected,"manual",secs,style,w["display_instruction"],w["salience"],r.context_ref)
     SPINE.set("microgoal",g,"core");BUS.queue("microgoal",g,ttl_seconds=900);return {"ok":True,"microgoal":g,"theme":w["theme"]}
 
@@ -240,7 +267,9 @@ def micro_feedback(r:FeedbackReq):
         topic=(r.topic or result.get("finished",{}).get("context_ref") or "").strip()
         if topic:
             result["learning_model"]=LEARN.observe(topic,result["passed"],r.error_type)
-        if CURRENT["session_id"]:RIVAL.add_user_score(CURRENT["session_id"],3 if result["passed"] else -1)
+        actions=policy_actions(result.get("finished",{}).get("kind","study"))
+        if CURRENT["session_id"] and actions.get("competition.enabled",True):
+            RIVAL.add_user_score(CURRENT["session_id"],3 if result["passed"] else -1)
     return result
 
 @app.post("/api/return/start")
@@ -335,6 +364,24 @@ def policies():return {"items":POLICIES.list(False)}
 
 @app.post("/api/policies")
 def add_policy(r:PolicyReq):return POLICIES.add(r.scope,r.trigger,r.action,r.priority,"user",r.rationale)
+
+@app.post("/api/policies/{policy_id}/disable")
+def disable_policy(policy_id:str):return POLICIES.disable(policy_id,"user")
+
+@app.get("/api/policies/{policy_id}/history")
+def policy_history(policy_id:str):return {"items":POLICIES.history(policy_id)}
+
+@app.post("/api/policies/{policy_id}/rollback")
+def policy_rollback(policy_id:str,r:PolicyRollbackReq):return POLICIES.rollback(policy_id,r.version,"user")
+
+@app.get("/api/capabilities")
+def capability_self_description():
+    return {"identity":SPINE.get("identity"),"architecture":SPINE.get("architecture"),
+            "devices":HUB.devices(include_retired=True),"device_capabilities":HUB.capability_report(),
+            "ai":AI.health(),"operating_mode":operating_mode(),
+            "core_features":["microgoal-wait-verify","return-contract","gaze-fusion","screen-context",
+                             "live-evolution","policy-rollback","student-model","error-genome",
+                             "event-sync","device-replacement","self-maintenance"]}
 
 @app.post("/api/evolve")
 async def evolve(r:EvolveReq):return await EVOLVE.apply_request(r.text)
