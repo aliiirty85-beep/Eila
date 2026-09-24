@@ -137,14 +137,31 @@ class SyncManager:
         }
 
     def store_offer(self,device_id:str,snapshot:dict):
-        if int(snapshot.get("protocol_version",0))!=self.protocol_version:
+        incoming=int(snapshot.get("protocol_version",0))
+        legacy=(self.protocol_version==3 and incoming==2)
+        if incoming!=self.protocol_version and not legacy:
             return {"ok":False,"reason":"protocol-mismatch","expected":self.protocol_version}
         now=int(time.time());c=self.db_factory()
         c.execute("""insert into device_snapshots(device_id,received_at,snapshot)
                      values(?,?,?) on conflict(device_id) do update set received_at=excluded.received_at,snapshot=excluded.snapshot""",
                   (device_id,now,json.dumps(snapshot,ensure_ascii=False)))
         c.commit();c.close()
-        applied=0;duplicates=0;state_applied=0;policies_imported=0
+        applied=0;duplicates=0;state_applied=0;policies_imported=0;memory_imported=0
+        if legacy:
+            for item in snapshot.get("memory",[])[:300]:
+                self.memory.upsert(item.get("category","context"),item.get("key","restored"),
+                                   item.get("value",""),float(item.get("confidence",.5)),"legacy-v2-replica")
+                memory_imported+=1
+            legacy_state={
+                "session":snapshot.get("session"),
+                "microgoal":snapshot.get("microgoal"),
+                "return_contract":snapshot.get("return_contract")
+            }
+            for key,value in legacy_state.items():
+                if value is not None:
+                    local=self.spine.get(key)
+                    if not local:
+                        self.spine.set(key,value,device_id,expected_revision=0);state_applied+=1
         for event in snapshot.get("events_tail",[])[:500]:
             r=self.events.ingest(event)
             if r.get("ok"):
@@ -157,17 +174,19 @@ class SyncManager:
         try:
             for p in snapshot.get("policies",[])[:100]:
                 if not p.get("policy_id"):continue
+                before=c.total_changes
                 c.execute("""insert or ignore into behavior_policies(policy_id,created_at,updated_at,scope,trigger_json,action_json,priority,enabled,version,source,rationale,supersedes)
                              values(?,?,?,?,?,?,?,?,?,?,?,?)""",
                           (p["policy_id"],int(p.get("created_at") or now),int(p.get("updated_at") or now),p.get("scope","study"),
                            json.dumps(p.get("trigger") or {},ensure_ascii=False),json.dumps(p.get("action") or {},ensure_ascii=False),
                            int(p.get("priority") or 50),int(bool(p.get("enabled",True))),int(p.get("version") or 1),
                            p.get("source","replica"),p.get("rationale",""),p.get("supersedes","")))
-                if c.total_changes:policies_imported+=1
+                if c.total_changes>before:policies_imported+=1
             c.commit()
         finally:c.close()
         return {"ok":True,"received_at":now,"events_applied":applied,"duplicates":duplicates,
-                "spine_applied":state_applied,"policies_imported":policies_imported}
+                "spine_applied":state_applied,"policies_imported":policies_imported,
+                "memory_imported":memory_imported,"legacy_import":legacy}
 
     def pull_events(self,after_seq=0,limit=200):
         items=self.events.list_since(after_seq,limit)
