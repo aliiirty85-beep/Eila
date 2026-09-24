@@ -99,18 +99,76 @@ class SpineState:
         key=key.strip();remote_rev=int(item.get("revision") or 0)
         if not key or remote_rev<=0:return {"ok":False,"reason":"bad-remote-state"}
         local=self.get(key)
-        if local and int(local.get("revision") or 0)>=remote_rev:
-            return {"ok":True,"applied":False,"reason":"local-newer-or-equal"}
-        now=int(item.get("updated_at") or time.time());src=str(item.get("source_device") or source_device)
-        value=item.get("value")
+        remote_value=item.get("value")
+        remote_src=str(item.get("source_device") or source_device)
+        if local:
+            local_rev=int(local.get("revision") or 0)
+            if local_rev>remote_rev:
+                return {"ok":True,"applied":False,"reason":"local-newer"}
+            if local_rev==remote_rev:
+                if local.get("value")==remote_value:
+                    return {"ok":True,"applied":False,"reason":"same-state"}
+                c=self.db_factory()
+                cur=c.execute("""insert into spine_conflicts(created_at,key,local_revision,remote_revision,
+                                 local_source,remote_source,local_value,remote_value,status)
+                                 values(?,?,?,?,?,?,?,?,?)""",
+                              (int(time.time()),key,local_rev,remote_rev,local.get("source_device",""),
+                               remote_src,json.dumps(local.get("value"),ensure_ascii=False),
+                               json.dumps(remote_value,ensure_ascii=False),"open"))
+                cid=int(cur.lastrowid);c.commit();c.close()
+                self.events.emit("spine.conflict.detected",{"conflict_id":cid,"key":key,"revision":remote_rev},
+                                 source_device,key,remote_rev)
+                return {"ok":False,"applied":False,"reason":"revision-divergence","conflict_id":cid}
+        now=int(item.get("updated_at") or time.time());src=remote_src
         c=self.db_factory()
         c.execute("""insert into spine_state(key,revision,updated_at,source_device,value) values(?,?,?,?,?)
                      on conflict(key) do update set revision=excluded.revision,updated_at=excluded.updated_at,
                      source_device=excluded.source_device,value=excluded.value""",
-                  (key,remote_rev,now,src,json.dumps(value,ensure_ascii=False,separators=(",",":"))))
+                  (key,remote_rev,now,src,json.dumps(remote_value,ensure_ascii=False,separators=(",",":"))))
         c.commit();c.close()
         self.events.emit("spine.state.replicated",{"key":key,"remote_revision":remote_rev},source_device,key,remote_rev)
         return {"ok":True,"applied":True,"key":key,"revision":remote_rev}
+
+    def conflicts(self,status="open",limit=100):
+        c=self.db_factory()
+        rows=c.execute("""select * from spine_conflicts where status=? order by id desc limit ?""",
+                       (status,max(1,min(500,int(limit))))).fetchall();c.close()
+        out=[]
+        for r in rows:
+            d=dict(r)
+            for k in ("local_value","remote_value"):
+                try:d[k]=json.loads(d[k])
+                except Exception:pass
+            out.append(d)
+        return out
+
+    def resolve_conflict(self,conflict_id:int,choice:str,source_device="user"):
+        c=self.db_factory();r=c.execute("select * from spine_conflicts where id=?",(int(conflict_id),)).fetchone()
+        if not r:c.close();return {"ok":False,"reason":"conflict-not-found"}
+        if r["status"]!="open":c.close();return {"ok":False,"reason":"conflict-already-resolved"}
+        row=dict(r)
+        try:remote_value=json.loads(row["remote_value"])
+        except Exception:remote_value=row["remote_value"]
+        if choice=="remote":
+            local=c.execute("select revision from spine_state where key=?",(row["key"],)).fetchone()
+            current=int(local["revision"]) if local else 0
+            new_rev=max(current,int(row["remote_revision"]))+1
+            c.execute("""insert into spine_state(key,revision,updated_at,source_device,value) values(?,?,?,?,?)
+                         on conflict(key) do update set revision=excluded.revision,updated_at=excluded.updated_at,
+                         source_device=excluded.source_device,value=excluded.value""",
+                      (row["key"],new_rev,int(time.time()),source_device,
+                       json.dumps(remote_value,ensure_ascii=False,separators=(",",":"))))
+            resolution="remote"
+        elif choice=="local":
+            resolution="local"
+        else:
+            c.close();return {"ok":False,"reason":"choice-must-be-local-or-remote"}
+        c.execute("update spine_conflicts set status='resolved',resolved_at=?,resolution=? where id=?",
+                  (int(time.time()),resolution,int(conflict_id)))
+        c.commit();c.close()
+        self.events.emit("spine.conflict.resolved",{"conflict_id":int(conflict_id),"choice":resolution},
+                         source_device,row["key"],int(row["local_revision"]))
+        return {"ok":True,"choice":resolution,"state":self.get(row["key"])}
 
 
 class SyncManager:
@@ -146,7 +204,7 @@ class SyncManager:
                      values(?,?,?) on conflict(device_id) do update set received_at=excluded.received_at,snapshot=excluded.snapshot""",
                   (device_id,now,json.dumps(snapshot,ensure_ascii=False)))
         c.commit();c.close()
-        applied=0;duplicates=0;state_applied=0;policies_imported=0;memory_imported=0
+        applied=0;duplicates=0;state_applied=0;state_conflicts=0;policies_imported=0;memory_imported=0
         if legacy:
             for item in snapshot.get("memory",[])[:300]:
                 self.memory.upsert(item.get("category","context"),item.get("key","restored"),
@@ -170,6 +228,7 @@ class SyncManager:
         for key,item in (snapshot.get("spine") or {}).items():
             r=self.spine.apply_remote(key,item,device_id)
             if r.get("applied"):state_applied+=1
+            if r.get("reason")=="revision-divergence":state_conflicts+=1
         c=self.db_factory()
         try:
             for p in snapshot.get("policies",[])[:100]:
@@ -185,8 +244,9 @@ class SyncManager:
             c.commit()
         finally:c.close()
         return {"ok":True,"received_at":now,"events_applied":applied,"duplicates":duplicates,
-                "spine_applied":state_applied,"policies_imported":policies_imported,
-                "memory_imported":memory_imported,"legacy_import":legacy}
+                "spine_applied":state_applied,"spine_conflicts":state_conflicts,
+                "policies_imported":policies_imported,"memory_imported":memory_imported,
+                "legacy_import":legacy}
 
     def pull_events(self,after_seq=0,limit=200):
         items=self.events.list_since(after_seq,limit)
