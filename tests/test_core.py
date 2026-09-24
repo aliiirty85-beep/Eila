@@ -89,3 +89,40 @@ def test_phone_snapshot_memory_restore():
         m=MemoryManager(s.connect);sync=SyncManager(s.connect,m,2);snap={"protocol_version":2,"memory":[{"category":"behavior","key":"x","value":"y","confidence":.8}]}
         sync.store_offer("phone",snap);r=sync.restore_memory_if_empty("phone");assert r["ok"] and m.relevant()
     finally:td.cleanup()
+
+
+def test_activity_verifier_driving_is_safety_first():
+    from app.context_verifier import ContextVerifier
+    td,s,_=env()
+    try:
+        v=ContextVerifier(s.connect,{"activity_claim_defaults_minutes":{"driving":60}})
+        claim=v.claim("driving",minutes=10)
+        assert claim["activity"]=="driving"
+        assert claim["safety_mode"]=="driving"
+        verified=v.evidence("phone",{"activity":"in_vehicle","speed_mps":12},"test")
+        assert verified["verdict"]=="probable"
+        assert verified["confidence"]>=.8
+    finally:td.cleanup()
+
+def test_eating_is_not_falsely_verified_from_weak_phone_signals():
+    from app.context_verifier import ContextVerifier
+    td,s,_=env()
+    try:
+        v=ContextVerifier(s.connect,{"activity_claim_defaults_minutes":{"eating":30}})
+        v.claim("eating",minutes=10)
+        out=v.evidence("phone",{"screen_interactive":False,"charging":False},"test")
+        assert out["verdict"]=="uncertain"
+        assert out["confidence"]<.65
+    finally:td.cleanup()
+
+def test_maintenance_safe_tick_creates_backup():
+    from app.maintenance import MaintenanceEngine
+    class DummyAI:
+        def health(self):return {"models":{}}
+    td,s,_=env()
+    try:
+        m=MaintenanceEngine(s.connect,s,DummyAI(),Path(td.name),{"maintenance_interval_minutes":0,"backup_keep":2})
+        out=m.safe_tick([],{"models":{}})
+        assert out["database"]["ok"]
+        assert list((Path(td.name)/"backups").glob("eila-*.db"))
+    finally:td.cleanup()
