@@ -248,3 +248,51 @@ def test_maintenance_synthetic_db_probe():
         checks=m.synthetic_checks()
         assert checks["db_read_write"]["ok"]
     finally:td.cleanup()
+
+
+def test_heartbeat_does_not_bump_revision_or_emit_event_when_only_state_changes():
+    from app.sync import EventBus
+    td,s,_=env()
+    try:
+        events=EventBus(s.connect);hub=DeviceHub(s.connect,15,events)
+        a=hub.heartbeat("phone","phone","P",{"gaze":True},{"battery":90},"fp1")
+        b=hub.heartbeat("phone","phone","P",{"gaze":True},{"battery":89},"fp1")
+        assert a["device_revision"]==b["device_revision"]==1
+        rows=events.list_since(0,20)
+        assert len(rows)==1 and rows[0]["kind"]=="device.joined"
+        c2=hub.heartbeat("phone","phone","P",{"gaze":True,"tts":True},{"battery":88},"fp1")
+        assert c2["device_revision"]==2
+        assert events.tail(10)[-1]["kind"]=="device.capabilities.changed"
+    finally:td.cleanup()
+
+def test_event_tail_returns_newest_events():
+    from app.sync import EventBus
+    td,s,_=env()
+    try:
+        e=EventBus(s.connect)
+        for i in range(520):e.emit("x",{"i":i},event_id="e-"+str(i))
+        tail=e.tail(500)
+        assert len(tail)==500
+        assert tail[0]["payload"]["i"]==20
+        assert tail[-1]["payload"]["i"]==519
+    finally:td.cleanup()
+
+def test_schema_v4_to_v5_creates_spine_tables_and_device_columns():
+    td=TemporaryDirectory()
+    try:
+        p=Path(td.name)/"old.db"
+        c=sqlite3.connect(p)
+        c.execute("create table meta(key text primary key,value text not null)")
+        c.execute("create table devices(device_id text primary key,kind text default 'unknown',name text default '',last_seen integer not null,capabilities text default '{}',state text default '{}')")
+        c.execute("create table sessions(id integer primary key autoincrement,started_at integer not null,ended_at integer,goal text default '',plan text default '',summary text default '')")
+        c.execute("create table microgoals(id integer primary key autoincrement,session_id integer,created_at integer not null,deadline_at integer not null,kind text not null,instruction text not null,question text default '',expected text default '',source text default 'manual',status text default 'waiting',answer text default '',result_note text default '',engagement_style text default '',display_instruction text default '',salience text default '',context_ref text default '')")
+        c.commit();c.close()
+        s=Storage(p);s.init();c=s.connect()
+        tables={r[0] for r in c.execute("select name from sqlite_master where type='table'").fetchall()}
+        cols={r["name"] for r in c.execute("pragma table_info(devices)").fetchall()}
+        version=c.execute("select value from meta where key='schema_version'").fetchone()[0]
+        c.close()
+        assert {"spine_state","events","behavior_policies","behavior_policy_history","student_topics","error_genome"}<=tables
+        assert {"status","retired_at","hardware_fingerprint","device_revision"}<=cols
+        assert version=="5"
+    finally:td.cleanup()
