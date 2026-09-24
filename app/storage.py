@@ -2,7 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import sqlite3,time,json,shutil
 
-SCHEMA_VERSION=5
+SCHEMA_VERSION=6
 
 class Storage:
     def __init__(self,path:Path):
@@ -62,6 +62,13 @@ class Storage:
         create table if not exists spine_state(
           key text primary key,revision integer not null default 1,updated_at integer not null,
           source_device text not null default 'core',value text not null
+        );
+        create table if not exists spine_conflicts(
+          id integer primary key autoincrement,created_at integer not null,key text not null,
+          local_revision integer not null,remote_revision integer not null,
+          local_source text default '',remote_source text default '',
+          local_value text not null,remote_value text not null,
+          status text not null default 'open',resolved_at integer,resolution text default ''
         );
         create table if not exists events(
           seq integer primary key autoincrement,event_id text not null unique,created_at integer not null,
