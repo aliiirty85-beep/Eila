@@ -294,7 +294,7 @@ def test_schema_v4_to_v5_creates_spine_tables_and_device_columns():
         c.close()
         assert {"spine_state","events","behavior_policies","behavior_policy_history","student_topics","error_genome"}<=tables
         assert {"status","retired_at","hardware_fingerprint","device_revision"}<=cols
-        assert version=="5"
+        assert version=="6"
     finally:td.cleanup()
 
 
@@ -331,4 +331,32 @@ def test_encrypted_replica_roundtrip():
         assert out["ok"] and path.exists()
         restored=sync.read_encrypted_replica(path,key)
         assert restored==payload
+    finally:td.cleanup()
+
+
+def test_spine_same_revision_divergence_is_preserved_as_conflict():
+    from app.sync import EventBus,SpineState
+    td,s,_=env()
+    try:
+        events=EventBus(s.connect);sp=SpineState(s.connect,events)
+        sp.set("session",{"goal":"زیست"},"laptop",expected_revision=0)
+        out=sp.apply_remote("session",{"revision":1,"source_device":"phone","value":{"goal":"شیمی"}},"phone")
+        assert not out["ok"] and out["reason"]=="revision-divergence"
+        conflicts=sp.conflicts()
+        assert conflicts and conflicts[0]["key"]=="session"
+        assert sp.get("session")["value"]["goal"]=="زیست"
+        resolved=sp.resolve_conflict(conflicts[0]["id"],"remote","user")
+        assert resolved["ok"] and resolved["state"]["value"]["goal"]=="شیمی"
+        assert resolved["state"]["revision"]==2
+    finally:td.cleanup()
+
+def test_spine_same_revision_same_value_is_idempotent():
+    from app.sync import EventBus,SpineState
+    td,s,_=env()
+    try:
+        events=EventBus(s.connect);sp=SpineState(s.connect,events)
+        sp.set("identity",{"name":"Eila"},"laptop",expected_revision=0)
+        out=sp.apply_remote("identity",{"revision":1,"source_device":"phone","value":{"name":"Eila"}},"phone")
+        assert out["ok"] and not out["applied"] and out["reason"]=="same-state"
+        assert sp.conflicts()==[]
     finally:td.cleanup()
