@@ -1,0 +1,20 @@
+{
+  "version": "1.0-LTS",
+  "protocol_version": 1,
+  "verdict_interval_seconds": 5,
+  "microgoal_default_seconds": 60,
+  "gaze_raw_retention_seconds": 180,
+  "intervention_budget_per_5min": 4,
+  "flow_protection_min_attention": 78,
+  "return_escalation_seconds": [0, 30, 90, 180],
+  "backup_interval_minutes": 30,
+  "backup_keep": 14,
+  "ai": {
+    "fast_models_env": "EILA_FAST_MODELS",
+    "deep_models_env": "EILA_DEEP_MODELS",
+    "vision_models_env": "EILA_VISION_MODELS",
+    "judge_models_env": "EILA_JUDGE_MODELS",
+    "research_models_env": "EILA_RESEARCH_MODELS",
+    "fallback_models": ["ollama/qwen2.5:7b"]
+  }
+}
