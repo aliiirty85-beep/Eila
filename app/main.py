@@ -126,7 +126,9 @@ async def startup():
     bootstrap_spine()
     ensure_core_node()
     restore_continuity()
-    asyncio.create_task(background_loop())
+    asyncio.create_task(background_loop(),name="eila-core-loop")
+    asyncio.create_task(research_loop(),name="eila-research-loop")
+    asyncio.create_task(maintenance_proposal_loop(),name="eila-maintenance-proposals")
 
 def ensure_core_node():
     fingerprint="|".join([platform.system(),platform.release(),platform.machine(),socket.gethostname()])
@@ -157,13 +159,39 @@ async def background_loop():
     global LAST_BACKUP
     while True:
         try:
-            ensure_core_node();RETURNS.tick();MICRO.tick();STATE["activity_context"]=VERIFIER.status();await auto_desktop_attention();await maybe_autogoal();await maybe_web_brain();STATE["maintenance"]=await asyncio.to_thread(MAINT.safe_tick,HUB.devices(),AI.health());await MAINT.propose_if_needed(health())
+            await asyncio.to_thread(ensure_core_node)
+            await asyncio.to_thread(RETURNS.tick)
+            await asyncio.to_thread(MICRO.tick)
+            STATE["activity_context"]=await asyncio.to_thread(VERIFIER.status)
+            await auto_desktop_attention()
+            await maybe_autogoal()
+            STATE["maintenance"]=await asyncio.to_thread(MAINT.safe_tick,HUB.devices(),AI.health())
             now=time.time();interval=float(CFG.get("backup_interval_minutes",30))*60
             if now-LAST_BACKUP>=interval:
                 await asyncio.to_thread(STORAGE.backup,DATA/"backups",CFG.get("backup_keep",14));LAST_BACKUP=now
         except Exception as e:
             STATE["last_error"]=f"{type(e).__name__}: {e}"
         await asyncio.sleep(max(2,int(CFG.get("verdict_interval_seconds",5))))
+
+async def research_loop():
+    # Never let optional web research compete with startup/UI responsiveness.
+    await asyncio.sleep(30)
+    while True:
+        try:
+            await maybe_web_brain()
+        except Exception as e:
+            STATE["research_error"]=f"{type(e).__name__}: {e}"
+        await asyncio.sleep(max(300,int(float(CFG.get("web_brain_interval_hours",20))*3600)))
+
+async def maintenance_proposal_loop():
+    await asyncio.sleep(60)
+    while True:
+        try:
+            health_snapshot=await asyncio.to_thread(health)
+            await MAINT.propose_if_needed(health_snapshot)
+        except Exception as e:
+            STATE["maintenance_proposal_error"]=f"{type(e).__name__}: {e}"
+        await asyncio.sleep(max(600,int(float(CFG.get("maintenance_proposal_interval_hours",24))*3600)))
 
 async def auto_desktop_attention():
     if not CURRENT["session_id"]:return
