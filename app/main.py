@@ -14,9 +14,9 @@ from .engagement import EngagementEngine
 from .microgoals import MicroGoalEngine
 from .return_contracts import ReturnContractManager
 from .focus_engine import FocusEngine
-from .learning import LearningPulse
+from .learning import LearningPulse,LearningModel
 from .integrity import StudyIntegrity
-from .memory import MemoryManager
+from .memory import MemoryManager,PolicyEngine,EvolutionEngine
 from .context import ContextRegistry
 from .screen_context import ScreenContext
 from .question_engine import QuestionEngine
@@ -27,7 +27,7 @@ from .security import SecurityManager
 from .future_engine import FutureEngine
 from .intent_router import IntentRouter
 from .firewall import StudyFirewall
-from .sync import SyncManager
+from .sync import SyncManager,EventBus,SpineState
 from .desktop_sensors import DesktopSensors
 from .attention_fusion import AttentionFusion
 from .context_verifier import ContextVerifier
@@ -47,12 +47,14 @@ except Exception:
 SECURITY=SecurityManager(DATA)
 def db():return STORAGE.connect()
 
-AI=AIRouter(CFG);BUS=CommandBus(db);HUB=DeviceHub(db,CFG.get("device_stale_seconds",15));ENG=EngagementEngine(db)
+EVENTS=EventBus(db);SPINE=SpineState(db,EVENTS)
+AI=AIRouter(CFG);BUS=CommandBus(db);HUB=DeviceHub(db,CFG.get("device_stale_seconds",15),EVENTS);ENG=EngagementEngine(db)
 MICRO=MicroGoalEngine(db,CFG.get("microgoal_default_seconds",60),CFG.get("microgoal_min_seconds",20),CFG.get("microgoal_max_seconds",180))
 RETURNS=ReturnContractManager(db,BUS,CFG);FOCUS=FocusEngine(CFG);PULSE=LearningPulse(db);INTEGRITY=StudyIntegrity();MEM=MemoryManager(db)
+LEARN=LearningModel(db,EVENTS);POLICIES=PolicyEngine(db,EVENTS);EVOLVE=EvolutionEngine(db,AI,POLICIES)
 CONTEXT=ContextRegistry(db);SCREEN=ScreenContext();QUESTIONS=QuestionEngine(AI,SCREEN,CONTEXT);WEB=WebBrain(db,AI,BASE,CFG)
 RIVAL=RivalEngine(db,CFG.get("competition_target_multiplier",1.07));FUTURE=FutureEngine();INTENTS=IntentRouter();FIREWALL=StudyFirewall(db)
-SYNC=SyncManager(db,MEM,CFG.get("protocol_version",2));DESKTOP=DesktopSensors();FUSION=AttentionFusion()
+SYNC=SyncManager(db,MEM,CFG.get("protocol_version",3),EVENTS,SPINE);DESKTOP=DesktopSensors();FUSION=AttentionFusion()
 VERIFIER=ContextVerifier(db,CFG);MAINT=MaintenanceEngine(db,STORAGE,AI,DATA,CFG)
 
 CURRENT={"session_id":None,"goal":"","plan":"","started_at":None}
@@ -108,14 +110,26 @@ class AttentionReq(BaseModel):score:float=Field(...,ge=0,le=100);screen_change:f
 class ScoreReq(BaseModel):delta:float
 class MemoryReq(BaseModel):category:str;key:str;value:str;confidence:float=.6;source:str="manual"
 class SnapshotReq(BaseModel):device_id:str;snapshot:dict=Field(default_factory=dict)
+class SpineSetReq(BaseModel):value:object;source_device:str="user";expected_revision:int|None=None
+class EventReq(BaseModel):event:dict=Field(default_factory=dict)
+class PolicyReq(BaseModel):scope:str="study";trigger:dict=Field(default_factory=dict);action:dict=Field(default_factory=dict);priority:int=50;rationale:str=""
+class EvolveReq(BaseModel):text:str
+class DeviceReplaceReq(BaseModel):old_device_id:str;new_device_id:str;kind:str="laptop";name:str="";capabilities:dict=Field(default_factory=dict);hardware_fingerprint:str=""
 class ActivityClaimReq(BaseModel):activity:str;minutes:float|None=None;note:str=""
 class ActivityEvidenceReq(BaseModel):device_id:str="";kind:str="device";facts:dict=Field(default_factory=dict)
 class BallStimulusReq(BaseModel):source:str="BallRivalAndroid";event:str;ts:int|None=None;extra:dict=Field(default_factory=dict)
 
 @app.on_event("startup")
 async def startup():
+    bootstrap_spine()
     restore_continuity()
     asyncio.create_task(background_loop())
+
+def bootstrap_spine():
+    if not SPINE.get("identity"):
+        SPINE.set("identity",{"name":"Eila","identity_version":1,"role":"persistent-study-companion"},"core")
+    if not SPINE.get("architecture"):
+        SPINE.set("architecture",{"mode":"device-independent","laptop_role":"replaceable-compute-node","protocol":CFG.get("protocol_version",3)},"core")
 
 def restore_continuity():
     c=db();r=c.execute("select * from sessions where ended_at is null order by id desc limit 1").fetchone();c.close()
@@ -195,6 +209,7 @@ def start_session(r:StartReq):
     if CURRENT["session_id"]:return {"ok":True,"session":CURRENT,"reason":"already-active"}
     now=int(time.time());c=db();cur=c.execute("insert into sessions(started_at,goal,plan) values(?,?,?)",(now,r.goal,r.plan));c.commit();sid=int(cur.lastrowid);c.close()
     CURRENT.update({"session_id":sid,"goal":r.goal,"plan":r.plan,"started_at":now});FOCUS.session_started=time.time();RIVAL.ensure_round(sid)
+    SPINE.set("session",dict(CURRENT),"core")
     return {"ok":True,"session":CURRENT}
 
 @app.post("/api/session/stop")
@@ -203,6 +218,7 @@ def stop_session():
     if sid:
         c=db();c.execute("update sessions set ended_at=?,summary=? where id=?",(int(time.time()),summary["text"],sid));c.commit();c.close()
     CURRENT.update({"session_id":None,"goal":"","plan":"","started_at":None});MICRO.current=None
+    SPINE.set("session",dict(CURRENT),"core");SPINE.set("microgoal",None,"core")
     BUS.queue("clear_microgoal",{},ttl_seconds=300)
     return {"ok":True,"summary":summary,"later_inbox":FIREWALL.pending(20)}
 
@@ -211,7 +227,7 @@ def micro_start(r:MicroReq):
     if not CURRENT["session_id"]:return {"ok":False,"reason":"start-session-first"}
     style=ENG.choose_style(r.kind);secs=r.seconds or CFG.get("microgoal_default_seconds",60);w=ENG.wrap(r.instruction,style,secs,MICRO.streak,r.hook)
     g=MICRO.start(CURRENT["session_id"],r.instruction,r.kind,r.question,r.expected,"manual",secs,style,w["display_instruction"],w["salience"],r.context_ref)
-    BUS.queue("microgoal",g,ttl_seconds=900);return {"ok":True,"microgoal":g,"theme":w["theme"]}
+    SPINE.set("microgoal",g,"core");BUS.queue("microgoal",g,ttl_seconds=900);return {"ok":True,"microgoal":g,"theme":w["theme"]}
 
 @app.post("/api/micro/feedback")
 def micro_feedback(r:FeedbackReq):
@@ -220,6 +236,10 @@ def micro_feedback(r:FeedbackReq):
         result["consequence"]=ENG.feedback(result["passed"],result.get("style",""),result.get("streak",0))
         ENG.record_trial(result.get("style","") or "precision",result["passed"],before,float(STATE.get("attention_score",before)),r.latency_ms)
         BUS.queue("feedback",{"text":result["consequence"],"passed":result["passed"],"clear_microgoal":True},ttl_seconds=180)
+        SPINE.set("microgoal",None,"core")
+        topic=(r.topic or result.get("finished",{}).get("context_ref") or "").strip()
+        if topic:
+            result["learning_model"]=LEARN.observe(topic,result["passed"],r.error_type)
         if CURRENT["session_id"]:RIVAL.add_user_score(CURRENT["session_id"],3 if result["passed"] else -1)
     return result
 
@@ -233,6 +253,13 @@ def return_ack(r:AckReq):return RETURNS.acknowledge(r.contract_id)
 
 @app.post("/api/device/heartbeat")
 def heartbeat(r:DeviceReq):return HUB.heartbeat(r.device_id,r.kind,r.name,r.capabilities,r.state)
+
+@app.get("/api/devices")
+def devices():return {"items":HUB.devices(include_retired=True),"capabilities":HUB.capability_report()}
+
+@app.post("/api/devices/replace")
+def replace_device(r:DeviceReplaceReq):
+    return HUB.replace(r.old_device_id,r.new_device_id,r.kind,r.name,r.capabilities,r.hardware_fingerprint)
 
 @app.post("/api/gaze")
 def gaze(r:GazeReq):
@@ -297,6 +324,24 @@ def memory(r:MemoryReq):MEM.upsert(r.category,r.key,r.value,r.confidence,r.sourc
 @app.get("/api/memory")
 def memories():return {"items":MEM.relevant()}
 
+@app.get("/api/spine")
+def spine_state():return {"state":SPINE.snapshot()}
+
+@app.post("/api/spine/{key}")
+def spine_set(key:str,r:SpineSetReq):return SPINE.set(key,r.value,r.source_device,r.expected_revision)
+
+@app.get("/api/policies")
+def policies():return {"items":POLICIES.list(False)}
+
+@app.post("/api/policies")
+def add_policy(r:PolicyReq):return POLICIES.add(r.scope,r.trigger,r.action,r.priority,"user",r.rationale)
+
+@app.post("/api/evolve")
+async def evolve(r:EvolveReq):return await EVOLVE.apply_request(r.text)
+
+@app.get("/api/learning/model")
+def learning_model():return {"student":LEARN.student(),"errors":LEARN.errors(),"behavior":LEARN.behavior(),"due_reviews":LEARN.due_reviews()}
+
 @app.get("/api/later")
 def later():return {"items":FIREWALL.pending()}
 @app.post("/api/later/{item_id}/done")
@@ -315,7 +360,13 @@ def rival_score(r:ScoreReq):
 @app.get("/api/sync/snapshot")
 def sync_snapshot():
     rival=RIVAL.state(CURRENT["session_id"]) if CURRENT["session_id"] else None
-    return SYNC.snapshot(CURRENT,MICRO.public(),RETURNS.active(),rival,WEB.latest(10))
+    return SYNC.snapshot(CURRENT,MICRO.public(),RETURNS.active(),rival,WEB.latest(10),POLICIES.list(False),HUB.devices(include_retired=True))
+
+@app.get("/api/sync/events")
+def sync_events(after_seq:int=0,limit:int=200):return SYNC.pull_events(after_seq,limit)
+
+@app.post("/api/sync/event")
+def sync_event(r:EventReq):return EVENTS.ingest(r.event)
 
 @app.post("/api/sync/offer")
 def sync_offer(r:SnapshotReq):return SYNC.store_offer(r.device_id,r.snapshot)
@@ -357,6 +408,12 @@ async def maintenance_audit():
 @app.post("/api/chat")
 async def chat(r:ChatReq):
     msg=r.message.strip()
+    if any(x in msg for x in ("از این به بعد","از حالا به بعد","از امروز به بعد")):
+        evolved=await EVOLVE.apply_request(msg)
+        if evolved.get("ok") and evolved.get("kind")=="policy":
+            return {"text":"این تغییر رفتاری ثبت و version شد. اگر نتیجه‌اش بد باشد می‌توانیم غیرفعالش کنیم یا برگردانیم.","action":"live-evolution","result":evolved}
+        if evolved.get("ok") and evolved.get("kind")=="capability":
+            return {"text":"این درخواست به قابلیت جدید نیاز دارد؛ به‌عنوان capability request ثبتش کردم تا در مسیر ایزوله ساخته و تست شود.","action":"capability-request","result":evolved}
     activity=VERIFIER.parse_claim(msg)
     if activity:
         out=VERIFIER.claim(activity,note=msg)
