@@ -127,7 +127,7 @@ class ContextVerifier:
           (float(score),verdict,json.dumps({"reasons":reasons,"blocks_study":blocks},ensure_ascii=False),claim_id));c.commit();c.close()
         return {"ok":True,"active":True,"id":claim_id,"activity":d["activity"],"claimed_until":d["claimed_until"],
                 "confidence":round(score,2),"verdict":verdict,"reasons":reasons,
-                "blocks_study":bool(blocks),"safety_mode":"driving" if d["activity"]=="driving" and score>=.35 else ""}
+                "blocks_study":bool(blocks),"safety_mode":"driving" if d["activity"]=="driving" else ""}
 
     def status(self):
         c=self.db_factory();r=c.execute("""select id from context_claims where status='active'
