@@ -24,11 +24,22 @@ from .web_brain import WebBrain
 from .rival import RivalEngine
 from .constitution import EILA_CONSTITUTION
 from .security import SecurityManager
+from .future_engine import FutureEngine
+from .intent_router import IntentRouter
+from .firewall import StudyFirewall
+from .sync import SyncManager
 
 BASE=Path(__file__).resolve().parent.parent
 DATA=BASE/"data";DATA.mkdir(exist_ok=True)
 CFG=json.loads((BASE/"config.json").read_text(encoding="utf-8"))
-STORAGE=Storage(DATA/"eila.db");STORAGE.init()
+STORAGE=Storage(DATA/"eila.db")
+try:
+    STORAGE.init()
+except Exception:
+    recovered=STORAGE.recover_latest_backup(DATA/"backups")
+    if not recovered.get("ok"):raise
+    STORAGE.init()
+
 SECURITY=SecurityManager(DATA)
 def db():return STORAGE.connect()
 
@@ -36,12 +47,15 @@ AI=AIRouter(CFG);BUS=CommandBus(db);HUB=DeviceHub(db,CFG.get("device_stale_secon
 MICRO=MicroGoalEngine(db,CFG.get("microgoal_default_seconds",60),CFG.get("microgoal_min_seconds",20),CFG.get("microgoal_max_seconds",180))
 RETURNS=ReturnContractManager(db,BUS,CFG);FOCUS=FocusEngine(CFG);PULSE=LearningPulse(db);INTEGRITY=StudyIntegrity();MEM=MemoryManager(db)
 CONTEXT=ContextRegistry(db);SCREEN=ScreenContext();QUESTIONS=QuestionEngine(AI,SCREEN,CONTEXT);WEB=WebBrain(db,AI,BASE,CFG)
-RIVAL=RivalEngine(db,CFG.get("competition_target_multiplier",1.07))
+RIVAL=RivalEngine(db,CFG.get("competition_target_multiplier",1.07));FUTURE=FutureEngine();INTENTS=IntentRouter();FIREWALL=StudyFirewall(db)
+SYNC=SyncManager(db,MEM,CFG.get("protocol_version",2))
 
 CURRENT={"session_id":None,"goal":"","plan":"","started_at":None}
 STATE={"attention_score":50.0,"attention":"unknown","flow":False,"risk":{"level":"low","risk":0},"phase":"IDLE","last_intervention":"",
-       "theme":ENG.daily_theme,"learning_pulse":{},"integrity":{},"gaze_device":None,"gaze":None,"devices":[]}
+       "theme":ENG.daily_theme,"learning_pulse":{},"integrity":{},"gaze_device":None,"gaze":None,"devices":[],
+       "future":{"now_5s":"—","next_60s":"—","round_10m":"—"}}
 LAST_BACKUP=0.0
+LAST_AUTOGOAL=0.0
 
 EILA_SYSTEM=("""تو ایلا هستی؛ مربی مطالعه همیشه‌حاضر، گرم، دقیق، آرام و در اجرا محکم.
 مالک هدف و تصمیم نهایی کاربر است؛ تو مدیر اجرای لحظه‌ای مطالعه هستی.
@@ -50,6 +64,7 @@ EILA_SYSTEM=("""تو ایلا هستی؛ مربی مطالعه همیشه‌حا
 وقتی Flow واقعی خوب است کم‌حرف شو. وقتی افت نزدیک است قبل از سقوط، مداخله کوچک و دقیق کن.
 اگر کاربر گفت چند دقیقه دیگر برمی‌گردد، آن را Return Contract بدان و پیگیری فعال کن.
 Gaze فقط سیگنال احتمالی است؛ ذهن‌خوانی نکن.
+در Focus Mode گفت‌وگوی حاشیه‌ای را به Later Inbox بفرست؛ سؤال درسی و مسئله فوری سلامت/زندگی را block نکن.
 پاسخ‌ها در Focus Mode کوتاه و عملی باشند.
 """+EILA_CONSTITUTION)
 
@@ -74,7 +89,9 @@ class FeedbackReq(BaseModel):
     answer:str="";status:str="done";note:str="";confidence:float=Field(.5,ge=0,le=1);latency_ms:int=0;topic:str="";error_type:str=""
 class ReturnReq(BaseModel):text:str="برگشت به مطالعه";minutes:float|None=None;due_at:int|None=None
 class AckReq(BaseModel):contract_id:int|None=None
-class DeviceReq(BaseModel):device_id:str;kind:str="android";name:str="";capabilities:dict={};state:dict={}
+class DeviceReq(BaseModel):
+    device_id:str;kind:str="android";name:str=""
+    capabilities:dict=Field(default_factory=dict);state:dict=Field(default_factory=dict)
 class GazeReq(BaseModel):
     device_id:str;zone:str="unknown";quality:float=.5;x:float|None=None;y:float|None=None
     study_ratio_15:float|None=None;study_ratio_60:float|None=None;away_streak_seconds:float=0
@@ -84,10 +101,12 @@ class ContextReq(BaseModel):kind:str="text";title:str="";content:str="";ref:str=
 class AttentionReq(BaseModel):score:float=Field(...,ge=0,le=100);screen_change:float|None=None;input_recent:bool|None=None
 class ScoreReq(BaseModel):delta:float
 class MemoryReq(BaseModel):category:str;key:str;value:str;confidence:float=.6;source:str="manual"
+class SnapshotReq(BaseModel):device_id:str;snapshot:dict=Field(default_factory=dict)
 
 @app.on_event("startup")
 async def startup():
-    restore_continuity();asyncio.create_task(background_loop())
+    restore_continuity()
+    asyncio.create_task(background_loop())
 
 def restore_continuity():
     c=db();r=c.execute("select * from sessions where ended_at is null order by id desc limit 1").fetchone();c.close()
@@ -103,25 +122,32 @@ async def background_loop():
             now=time.time();interval=float(CFG.get("backup_interval_minutes",30))*60
             if now-LAST_BACKUP>=interval:
                 STORAGE.backup(DATA/"backups",CFG.get("backup_keep",14));LAST_BACKUP=now
-        except Exception as e:STATE["last_error"]=f"{type(e).__name__}: {e}"
+        except Exception as e:
+            STATE["last_error"]=f"{type(e).__name__}: {e}"
         await asyncio.sleep(max(2,int(CFG.get("verdict_interval_seconds",5))))
 
 async def maybe_web_brain():
     if not WEB.running:await WEB.run_once(force=False)
 
 async def maybe_autogoal():
+    global LAST_AUTOGOAL
     if not CURRENT["session_id"] or MICRO.current:return
-    gaze_device,gaze=HUB.primary_gaze()
-    if not gaze:return
-    event=(gaze.get("event") or "").lower()
-    high_value=event in {"long_fixation","rapid_revisit","flighty","stuck"} or STATE.get("risk",{}).get("level")=="high"
-    if not high_value:return
-    result=await QUESTIONS.from_gaze(gaze,deep=True)
-    if not result.get("ok"):return
-    d=result["data"];style=ENG.choose_style(d.get("kind","study"))
-    w=ENG.wrap(d.get("instruction") or d.get("question") or "همین بخش",style,d.get("seconds",60),MICRO.streak,d.get("hook",""))
-    g=MICRO.start(CURRENT["session_id"],d.get("instruction") or d.get("question") or "همین بخش",d.get("kind","study"),d.get("question",""),
-                  d.get("expected",""),"gaze-ai",d.get("seconds",60),style,w["display_instruction"],w["salience"],d.get("topic",""))
+    now=time.time();gaze_device,gaze=HUB.primary_gaze();gaze=gaze or {"zone":"laptop","quality":0.0,"event":""}
+    high_value=(gaze.get("event") or "").lower() in {"long_fixation","rapid_revisit","flighty","stuck"} or STATE.get("risk",{}).get("level")=="high"
+    interval=8 if high_value else int(CFG.get("screen_vision_interval_seconds",20))
+    if now-LAST_AUTOGOAL<interval:return
+    LAST_AUTOGOAL=now
+    result=await QUESTIONS.from_gaze(gaze,deep=high_value)
+    if result.get("ok"):
+        d=result["data"];style=ENG.choose_style(d.get("kind","study"))
+        w=ENG.wrap(d.get("instruction") or d.get("question") or "همین بخش",style,d.get("seconds",60),MICRO.streak,d.get("hook",""))
+        g=MICRO.start(CURRENT["session_id"],d.get("instruction") or d.get("question") or "همین بخش",d.get("kind","study"),d.get("question",""),
+                      d.get("expected",""),"gaze-ai" if high_value else "context-ai",d.get("seconds",60),style,w["display_instruction"],w["salience"],d.get("topic",""))
+    else:
+        style=ENG.choose_style("recall")
+        instruction="کوچک‌ترین بخش بعدی جلویت را بخوان؛ بعد بدون نگاه در یک جمله توضیحش بده."
+        w=ENG.wrap(instruction,style,45,MICRO.streak)
+        g=MICRO.start(CURRENT["session_id"],instruction,"recall","در یک جمله چه فهمیدی؟","","local-fallback",45,style,w["display_instruction"],w["salience"],"")
     BUS.queue("microgoal",g,ttl_seconds=900)
 
 @app.get("/")
@@ -130,13 +156,16 @@ def root_ui():return FileResponse(BASE/"app"/"static"/"index.html")
 @app.get("/api/state")
 def state():
     STATE["devices"]=HUB.devices();STATE["theme"]=ENG.daily_theme;STATE["microgoal"]=MICRO.public();STATE["return_contract"]=RETURNS.active();STATE["session"]=CURRENT
-    if CURRENT["session_id"]:STATE["rival"]=RIVAL.ensure_round(CURRENT["session_id"])
+    rival=RIVAL.ensure_round(CURRENT["session_id"]) if CURRENT["session_id"] else None
+    STATE["rival"]=rival
+    STATE["future"]=FUTURE.forecast(float(STATE.get("attention_score",50)),STATE.get("gaze"),MICRO.public(),STATE.get("risk"),bool(STATE.get("flow")),rival)
     return STATE
 
 @app.get("/api/health")
 def health():
     return {"ok":STORAGE.integrity().get("ok",False),"database":STORAGE.integrity(),"ai":AI.health(),"screen_error":SCREEN.last_error,
-            "devices":HUB.devices(),"web_brain":{"last_run":WEB.last_run,"last_error":WEB.last_error}}
+            "devices":HUB.devices(),"web_brain":{"last_run":WEB.last_run,"last_error":WEB.last_error},
+            "protocol_version":CFG.get("protocol_version",2)}
 
 @app.post("/api/session/start")
 def start_session(r:StartReq):
@@ -151,7 +180,8 @@ def stop_session():
     if sid:
         c=db();c.execute("update sessions set ended_at=?,summary=? where id=?",(int(time.time()),summary["text"],sid));c.commit();c.close()
     CURRENT.update({"session_id":None,"goal":"","plan":"","started_at":None});MICRO.current=None
-    return {"ok":True,"summary":summary}
+    BUS.queue("clear_microgoal",{},ttl_seconds=300)
+    return {"ok":True,"summary":summary,"later_inbox":FIREWALL.pending(20)}
 
 @app.post("/api/micro/start")
 def micro_start(r:MicroReq):
@@ -166,7 +196,7 @@ def micro_feedback(r:FeedbackReq):
     if result.get("ok"):
         result["consequence"]=ENG.feedback(result["passed"],result.get("style",""),result.get("streak",0))
         ENG.record_trial(result.get("style","") or "precision",result["passed"],before,float(STATE.get("attention_score",before)),r.latency_ms)
-        BUS.queue("feedback",{"text":result["consequence"],"passed":result["passed"]},ttl_seconds=180)
+        BUS.queue("feedback",{"text":result["consequence"],"passed":result["passed"],"clear_microgoal":True},ttl_seconds=180)
         if CURRENT["session_id"]:RIVAL.add_user_score(CURRENT["session_id"],3 if result["passed"] else -1)
     return result
 
@@ -194,15 +224,24 @@ def command_ack(device_id:str,command_id:int):BUS.ack(command_id,device_id);retu
 @app.post("/api/attention")
 def attention(r:AttentionReq):
     score=float(r.score);FOCUS.observe(score);_,gaze=HUB.primary_gaze();risk=FOCUS.risk(score,gaze,MICRO.public());flow=FOCUS.flow_protected(score,gaze,MICRO.public());pulse=PULSE.score(score);integrity=INTEGRITY.assess(score,gaze,r.screen_change,r.input_recent,pulse)
-    phase=FOCUS.phase(score);intervention="";critical=score<28 or float((gaze or {}).get("away_streak_seconds") or 0)>=8
+    phase=FOCUS.phase(score);intervention="";kind="";critical=score<28 or float((gaze or {}).get("away_streak_seconds") or 0)>=8
     if not flow and FOCUS.can_intervene(critical):
-        if critical:intervention="ایلا: RETURN. فقط همین مأموریت."
-        elif risk["level"]=="high":intervention="ایلا: افت نزدیکه؛ انتخاب اضافه نداریم. همین micro-goal را تحویل بده."
-        if intervention:FOCUS.mark_intervention();BUS.queue("speak" if critical else "notify",{"text":intervention},ttl_seconds=120)
-    STATE.update({"attention_score":score,"attention":"study" if score>=60 else ("uncertain" if score>=45 else "off-task"),"risk":risk,"flow":flow,"phase":phase,"learning_pulse":pulse,"integrity":integrity,"last_intervention":intervention})
+        if critical:intervention="ایلا: RETURN. فقط همین مأموریت.";kind="critical-return"
+        elif risk["level"]=="high":intervention="ایلا: افت نزدیکه؛ انتخاب اضافه نداریم. همین micro-goal را تحویل بده.";kind="prefailure"
+        if intervention:
+            FOCUS.mark_intervention();BUS.queue("speak" if critical else "notify",{"text":intervention},ttl_seconds=120)
+            c=db();c.execute("insert into interventions(ts,session_id,kind,pre_score,metadata) values(?,?,?,?,?)",(int(time.time()),CURRENT["session_id"],kind,score,json.dumps({"risk":risk},ensure_ascii=False)));c.commit();c.close()
+    now=int(time.time());c=db()
+    pending=c.execute("select id,pre_score from interventions where post_score is null and ts<=? and ts>=?",(now-25,now-180)).fetchall()
+    for p in pending:
+        pre=float(p["pre_score"] or 0);c.execute("update interventions set post_score=?,outcome=? where id=?",(score,score-pre,p["id"]))
+    c.commit();c.close()
+    rival=RIVAL.ensure_round(CURRENT["session_id"]) if CURRENT["session_id"] else None
+    future=FUTURE.forecast(score,gaze,MICRO.public(),risk,flow,rival)
+    STATE.update({"attention_score":score,"attention":"study" if score>=60 else ("uncertain" if score>=45 else "off-task"),"risk":risk,"flow":flow,"phase":phase,"learning_pulse":pulse,"integrity":integrity,"last_intervention":intervention,"future":future})
     if CURRENT["session_id"]:
         c=db();c.execute("""insert into attention_samples(ts,session_id,device_id,score,zone,study_ratio,away_streak,fixation,jump_rate,risk,metadata)
-          values(?,?,?,?,?,?,?,?,?,?,?)""",(int(time.time()),CURRENT["session_id"],STATE.get("gaze_device") or "",score,(gaze or {}).get("zone",""),(gaze or {}).get("study_ratio_15"),(gaze or {}).get("away_streak_seconds"),(gaze or {}).get("max_fixation_seconds"),(gaze or {}).get("jump_rate"),risk["level"],json.dumps(integrity,ensure_ascii=False)));c.commit();c.close()
+          values(?,?,?,?,?,?,?,?,?,?,?)""",(now,CURRENT["session_id"],STATE.get("gaze_device") or "",score,(gaze or {}).get("zone",""),(gaze or {}).get("study_ratio_15"),(gaze or {}).get("away_streak_seconds"),(gaze or {}).get("max_fixation_seconds"),(gaze or {}).get("jump_rate"),risk["level"],json.dumps(integrity,ensure_ascii=False)));c.commit();c.close()
     return STATE
 
 @app.post("/api/context/current")
@@ -220,19 +259,50 @@ async def question_from_gaze():
 def memory(r:MemoryReq):MEM.upsert(r.category,r.key,r.value,r.confidence,r.source);return {"ok":True}
 @app.get("/api/memory")
 def memories():return {"items":MEM.relevant()}
+
+@app.get("/api/later")
+def later():return {"items":FIREWALL.pending()}
+@app.post("/api/later/{item_id}/done")
+def later_done(item_id:int):FIREWALL.clear(item_id);return {"ok":True}
+
 @app.get("/api/research/latest")
 def research_latest():return {"items":WEB.latest()}
 @app.post("/api/research/run")
 async def research_run():return await WEB.run_once(force=True)
+
 @app.post("/api/rival/score")
 def rival_score(r:ScoreReq):
     if not CURRENT["session_id"]:return {"ok":False,"reason":"no-session"}
     return {"ok":True,"state":RIVAL.add_user_score(CURRENT["session_id"],r.delta)}
 
+@app.get("/api/sync/snapshot")
+def sync_snapshot():
+    rival=RIVAL.state(CURRENT["session_id"]) if CURRENT["session_id"] else None
+    return SYNC.snapshot(CURRENT,MICRO.public(),RETURNS.active(),rival,WEB.latest(10))
+
+@app.post("/api/sync/offer")
+def sync_offer(r:SnapshotReq):return SYNC.store_offer(r.device_id,r.snapshot)
+
+@app.post("/api/sync/restore-memory/{device_id}")
+def sync_restore(device_id:str):return SYNC.restore_memory_if_empty(device_id)
+
 @app.post("/api/chat")
 async def chat(r:ChatReq):
-    context={"goal":CURRENT["goal"],"plan":CURRENT["plan"],"microgoal":MICRO.public(),"return_contract":RETURNS.active(),"theme":ENG.daily_theme,"state":STATE,"memory":MEM.relevant(15)}
-    txt=await AI.ask("fast",[{"role":"system","content":EILA_SYSTEM},{"role":"user","content":json.dumps(context,ensure_ascii=False)+"\nپیام کاربر: "+r.message}],max_tokens=700)
+    msg=r.message.strip();local=INTENTS.local(msg)
+    if local["intent"]=="return_contract":
+        c=RETURNS.create(msg,minutes=local["minutes"])
+        return {"text":f"باشه. {local['minutes']:g} دقیقه ثبت شد؛ اگر برنگردی خودم پیگیری می‌کنم.","action":"return_contract","contract":c}
+    if local["intent"]=="return_ack":
+        a=RETURNS.acknowledge()
+        return {"text":"برگشتی. همان رشته قبلی را ادامه می‌دهیم.","action":"return_ack","result":a}
+    if CURRENT["session_id"] and MICRO.public():
+        cls=await INTENTS.classify_focus(AI,msg,CURRENT["goal"],MICRO.public())
+        if cls.get("label")=="unrelated" and cls.get("confidence",0)>=.65:
+            item=FIREWALL.defer(msg,"focus-mode")
+            return {"text":"این را برای بعد نگه داشتم. الان همان مأموریت فعال را تحویل بده.","action":"deferred","later_id":item}
+    context={"goal":CURRENT["goal"],"plan":CURRENT["plan"],"microgoal":MICRO.public(),"return_contract":RETURNS.active(),"theme":ENG.daily_theme,
+             "state":STATE,"memory":MEM.relevant(15),"recent_research":WEB.latest(5)}
+    txt=await AI.ask("fast",[{"role":"system","content":EILA_SYSTEM},{"role":"user","content":json.dumps(context,ensure_ascii=False)+"\nپیام کاربر: "+msg}],max_tokens=700)
     if txt.startswith("__AI_ERROR__"):txt="مغز زبانی در دسترس نیست؛ قراردادها، micro-goal، حافظه و نگهبانی پایه ادامه دارند."
     return {"text":txt}
 
