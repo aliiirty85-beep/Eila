@@ -192,13 +192,13 @@ def test_learning_model_schedules_fast_repair_after_error():
         assert m.errors()[0]["error_type"]=="concept-gap"
     finally:td.cleanup()
 
-def test_sync_offer_rejects_wrong_protocol_and_deduplicates_events():
+def test_sync_offer_rejects_unknown_protocol_and_deduplicates_events():
     from app.sync import SyncManager,EventBus,SpineState
     td,s,_=env()
     try:
         mem=MemoryManager(s.connect);events=EventBus(s.connect);sp=SpineState(s.connect,events)
         sync=SyncManager(s.connect,mem,3,events,sp)
-        bad=sync.store_offer("phone",{"protocol_version":2})
+        bad=sync.store_offer("phone",{"protocol_version":1})
         assert not bad["ok"] and bad["reason"]=="protocol-mismatch"
         event={"event_id":"abc","kind":"device.test","payload":{"ok":True},"source_device":"phone"}
         snap={"protocol_version":3,"events_tail":[event,event]}
