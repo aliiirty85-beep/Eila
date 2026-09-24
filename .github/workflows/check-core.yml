@@ -28,3 +28,24 @@ jobs:
         run: node --check app/static/app.js
       - name: Unit tests
         run: python -m pytest -q
+
+      - name: Startup HTTP smoke test
+        shell: bash
+        run: |
+          python -m uvicorn app.main:app --host 127.0.0.1 --port 8765 --log-level debug > /tmp/eila-startup.log 2>&1 &
+          PID=$!
+          OK=0
+          for i in {1..20}; do
+            if curl -fsS --max-time 2 http://127.0.0.1:8765/api/health >/tmp/eila-health.json; then
+              OK=1
+              break
+            fi
+            sleep 0.5
+          done
+          if [ "$OK" -ne 1 ]; then
+            cat /tmp/eila-startup.log
+            kill $PID || true
+            exit 1
+          fi
+          cat /tmp/eila-health.json
+          kill $PID || true
