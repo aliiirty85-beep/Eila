@@ -56,9 +56,9 @@ class QuestionEngine:
         prompt=(
             "برای یک پاسخ غلط، یک repair micro-goal بسیار کوچک فارسی بساز؛ هدف توضیح خطاست نه تنبیه. "
             "بعد از repair یک retest متفاوت ولی هم‌مفهوم لازم است. اگر منبع کافی نیست، از حدس درباره محتوای دیده‌نشده خودداری کن. "
-            "فقط JSON: {"ok":true,"repair_instruction":"...","repair_question":"...","repair_expected":"","
-            ""repair_seconds":35,"retest_instruction":"...","retest_question":"...","retest_expected":"","
-            ""retest_seconds":55,"topic":"...","error_type":"concept-gap|inattention|rushing|calculation|option-reading|forgetting|unknown"}."
+            'فقط JSON: {"ok":true,"repair_instruction":"...","repair_question":"...","repair_expected":"",'
+            '"repair_seconds":35,"retest_instruction":"...","retest_question":"...","retest_expected":"",'
+            '"retest_seconds":55,"topic":"...","error_type":"concept-gap|inattention|rushing|calculation|option-reading|forgetting|unknown"}.'
         )
         payload={
             "kind":finished.get("kind","study"),
