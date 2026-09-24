@@ -27,7 +27,7 @@ import java.util.concurrent.Executors
 class GazeService:LifecycleService(),TextToSpeech.OnInitListener{
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO);private val cameraExecutor=Executors.newSingleThreadExecutor()
     private lateinit var prefs:AppPrefs;private lateinit var api:EilaApi;private lateinit var local:LocalStore;private lateinit var calibration:CalibrationModel;private lateinit var metrics:GazeMetrics
-    private var landmarker:FaceLandmarker?=null;private var tts:TextToSpeech?=null;private var lastFrameAt=0L;private var lastGazeSendAt=0L;private var lastHeartbeat=0L;private var lastSync=0L;private var lastOfflineGuard=0L
+    private var landmarker:FaceLandmarker?=null;private var tts:TextToSpeech?=null;private var lastFrameAt=0L;private var lastGazeSendAt=0L;private var lastHeartbeat=0L;private var lastSync=0L;private var lastOfflineGuard=0L;private var lastFaceAt=0L
     @Volatile private var serverOnline=true
     private var latestPrediction=GazePrediction("unknown",null,null,0f)
 
@@ -44,6 +44,7 @@ class GazeService:LifecycleService(),TextToSpeech.OnInitListener{
             val raw=image.toBitmap();val m=Matrix();m.postRotate(image.imageInfo.rotationDegrees.toFloat());m.postScale(-1f,1f);val bitmap=Bitmap.createBitmap(raw,0,0,raw.width,raw.height,m,true);val mp=BitmapImageBuilder(bitmap).build()
             val face=landmarker?.detect(mp)?.faceLandmarks()?.firstOrNull()
             if(face!=null&&face.size>473){
+                lastFaceAt=System.currentTimeMillis()
                 fun p(i:Int)=face[i]
                 val f=FeatureVector(listOf(p(468).x(),p(468).y(),p(473).x(),p(473).y(),p(1).x(),p(1).y(),p(33).x(),p(263).x(),p(10).y(),p(152).y()))
                 GazeRuntime.push(f);val pred=calibration.predict(f);latestPrediction=pred;val met=metrics.add(pred);val event=(met["event"] as? String)?:""
@@ -54,7 +55,9 @@ class GazeService:LifecycleService(),TextToSpeech.OnInitListener{
 
     private fun offlineGuard(met:Map<String,Any?>){val now=System.currentTimeMillis();val micro=local.get("microgoal")?:"";if(micro.isBlank())return;val away=(met["away_streak_seconds"] as? Number)?.toFloat()?:0f;if(away>=8f&&now-lastOfflineGuard>=60_000){lastOfflineGuard=now;val text="ایلا آفلاینه، ولی نگهبانی فعاله. برگرد به مأموریت ذخیره‌شده.";speak(text);NotificationHelper.show(this,2500,"ایلا — حالت بقا",text)}}
 
-    private fun startNetworkLoop(){scope.launch{while(isActive){val now=System.currentTimeMillis();if(now-lastHeartbeat>5000){serverOnline=api.heartbeat(JSONObject().put("calibration_points",calibration.count()).put("zone",latestPrediction.zone).put("offline_guard",true));lastHeartbeat=now};if(serverOnline){val a=api.commands();for(i in 0 until a.length()){val c=a.optJSONObject(i)?:continue;handleCommand(c);api.ack(c.optLong("id"))};if(now-lastSync>30_000){syncReplica();lastSync=now}};checkLocalReturns(now/1000);delay(2000)}}}
+    private fun startNetworkLoop(){scope.launch{while(isActive){val now=System.currentTimeMillis();if(now-lastHeartbeat>5000){val faceAge=if(lastFaceAt==0L)999999L else (now-lastFaceAt)/1000
+                    val state=DeviceContext.snapshot(this@GazeService,faceAge).put("calibration_points",calibration.count()).put("zone",latestPrediction.zone).put("offline_guard",true)
+                    serverOnline=api.heartbeat(state);lastHeartbeat=now};if(serverOnline){val a=api.commands();for(i in 0 until a.length()){val c=a.optJSONObject(i)?:continue;handleCommand(c);api.ack(c.optLong("id"))};if(now-lastSync>30_000){syncReplica();lastSync=now}};checkLocalReturns(now/1000);delay(2000)}}}
 
     private fun syncReplica(){val old=local.get("server_snapshot");if(!old.isNullOrBlank()){try{api.post("/api/sync/offer",JSONObject().put("device_id",prefs.deviceId).put("snapshot",JSONObject(old)))}catch(_:Exception){}};val fresh=api.get("/api/sync/snapshot");if(fresh!=null)local.put("server_snapshot",fresh.toString())}
 
