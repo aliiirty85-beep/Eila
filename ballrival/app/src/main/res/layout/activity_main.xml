@@ -1,0 +1,20 @@
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Ball Rival v2" android:textSize="26sp" android:textStyle="bold"/>
+<TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Ready" android:paddingTop="8dp" android:paddingBottom="12dp"/>
+<TextView android:id="@+id/countLabel" android:layout_width="match_parent" android:layout_height="wrap_content"/><SeekBar android:id="@+id/minCount" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="19"/><SeekBar android:id="@+id/maxCount" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="19"/>
+<TextView android:id="@+id/sizeLabel" android:layout_width="match_parent" android:layout_height="wrap_content" android:paddingTop="10dp"/><SeekBar android:id="@+id/minSize" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="336"/><SeekBar android:id="@+id/maxSize" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="336"/>
+<TextView android:id="@+id/stayLabel" android:layout_width="match_parent" android:layout_height="wrap_content" android:paddingTop="10dp"/><SeekBar android:id="@+id/minStay" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="11"/><SeekBar android:id="@+id/maxStay" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="11"/>
+<TextView android:id="@+id/opacityLabel" android:layout_width="match_parent" android:layout_height="wrap_content" android:paddingTop="10dp"/><SeekBar android:id="@+id/minOpacity" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="100"/><SeekBar android:id="@+id/maxOpacity" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="100"/>
+<CheckBox android:id="@+id/tapDestroys" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Tap destroys ball (150ms fade)"/>
+<CheckBox android:id="@+id/tabletBoost" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Tablet adaptive size boost"/>
+<TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Optional Eila telemetry" android:textStyle="bold" android:paddingTop="12dp"/>
+<CheckBox android:id="@+id/eilaEnabled" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Send lightweight events to Eila"/>
+<EditText android:id="@+id/eilaUrl" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="http://LAPTOP-IP:8765" android:inputType="textUri"/>
+<EditText android:id="@+id/eilaToken" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Eila pairing token" android:inputType="textPassword"/>
+<Button android:id="@+id/start" android:layout_width="match_parent" android:layout_height="56dp" android:text="Start / Apply Overlay" android:layout_marginTop="16dp"/>
+<Button android:id="@+id/pattern" android:layout_width="match_parent" android:layout_height="56dp" android:text="Attack Now / New Pattern"/>
+<Button android:id="@+id/pause" android:layout_width="match_parent" android:layout_height="56dp" android:text="Pause / Resume"/>
+<Button android:id="@+id/stop" android:layout_width="match_parent" android:layout_height="56dp" android:text="Stop Overlay"/>
+<TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Ball taps are stimulation telemetry, not proof of studying. Eila must combine them with gaze and recall." android:paddingTop="12dp" android:paddingBottom="24dp"/>
+</LinearLayout></ScrollView>
