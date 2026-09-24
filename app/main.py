@@ -114,6 +114,7 @@ class SpineSetReq(BaseModel):value:object;source_device:str="user";expected_revi
 class EventReq(BaseModel):event:dict=Field(default_factory=dict)
 class PolicyReq(BaseModel):scope:str="study";trigger:dict=Field(default_factory=dict);action:dict=Field(default_factory=dict);priority:int=50;rationale:str=""
 class PolicyRollbackReq(BaseModel):version:int
+class ConflictResolveReq(BaseModel):choice:str
 class EvolveReq(BaseModel):text:str
 class DeviceReplaceReq(BaseModel):old_device_id:str;new_device_id:str;kind:str="laptop";name:str="";capabilities:dict=Field(default_factory=dict);hardware_fingerprint:str=""
 class ActivityClaimReq(BaseModel):activity:str;minutes:float|None=None;note:str=""
@@ -414,10 +415,17 @@ def memory(r:MemoryReq):MEM.upsert(r.category,r.key,r.value,r.confidence,r.sourc
 def memories():return {"items":MEM.relevant()}
 
 @app.get("/api/spine")
-def spine_state():return {"state":SPINE.snapshot()}
+def spine_state():return {"state":SPINE.snapshot(),"conflicts":SPINE.conflicts()}
 
 @app.post("/api/spine/{key}")
 def spine_set(key:str,r:SpineSetReq):return SPINE.set(key,r.value,r.source_device,r.expected_revision)
+
+@app.get("/api/spine/conflicts/open")
+def spine_conflicts():return {"items":SPINE.conflicts()}
+
+@app.post("/api/spine/conflicts/{conflict_id}/resolve")
+def spine_conflict_resolve(conflict_id:int,r:ConflictResolveReq):
+    return SPINE.resolve_conflict(conflict_id,r.choice,"user")
 
 @app.get("/api/policies")
 def policies():return {"items":POLICIES.list(False)}
@@ -441,7 +449,8 @@ def capability_self_description():
             "ai":AI.health(),"operating_mode":operating_mode(),
             "core_features":["microgoal-wait-verify","return-contract","gaze-fusion","screen-context",
                              "live-evolution","policy-rollback","student-model","error-genome",
-                             "event-sync","device-replacement","self-maintenance"]}
+                             "event-sync","spine-conflict-preservation","device-replacement","self-maintenance"],
+            "capability_requests":EVOLVE.capability_requests(20)}
 
 @app.post("/api/evolve")
 async def evolve(r:EvolveReq):return await EVOLVE.apply_request(r.text)
