@@ -49,3 +49,44 @@ class QuestionEngine:
         if not d.get("study",True):return {"ok":False,"error":"not-study","raw":result.get("raw","")}
         d["seconds"]=max(20,min(180,int(d.get("seconds") or 60)))
         return {"ok":True,"data":d}
+
+
+    async def repair_after_failure(self,finished:dict,answer:str,error_type:str="",topic:str=""):
+        active=self.context_registry.current()
+        prompt=(
+            "برای یک پاسخ غلط، یک repair micro-goal بسیار کوچک فارسی بساز؛ هدف توضیح خطاست نه تنبیه. "
+            "بعد از repair یک retest متفاوت ولی هم‌مفهوم لازم است. اگر منبع کافی نیست، از حدس درباره محتوای دیده‌نشده خودداری کن. "
+            "فقط JSON: {"ok":true,"repair_instruction":"...","repair_question":"...","repair_expected":"","
+            ""repair_seconds":35,"retest_instruction":"...","retest_question":"...","retest_expected":"","
+            ""retest_seconds":55,"topic":"...","error_type":"concept-gap|inattention|rushing|calculation|option-reading|forgetting|unknown"}."
+        )
+        payload={
+            "kind":finished.get("kind","study"),
+            "instruction":finished.get("instruction",""),
+            "question":finished.get("question",""),
+            "user_answer":answer,
+            "reported_error_type":error_type,
+            "topic":topic or finished.get("context_ref","")
+        }
+        content=[{"type":"text","text":prompt+"\nAttempt:\n"+json.dumps(payload,ensure_ascii=False)}]
+        has_source=False
+        if active and active.get("content"):
+            has_source=True;content.append({"type":"text","text":"Active source context:\n"+active["content"][:12000]})
+        if active and active.get("kind")=="image" and active.get("ref"):
+            try:
+                from pathlib import Path
+                page=Path(active["ref"]).read_bytes()
+                if page:
+                    has_source=True
+                    content.append({"type":"image_url","image_url":{"url":self.screen.data_url(page)}})
+            except Exception:
+                pass
+        if not has_source and not finished.get("question") and not finished.get("instruction"):
+            return {"ok":False,"error":"insufficient-context"}
+        tier="vision" if active and active.get("kind")=="image" else "deep"
+        r=await self.ai.ask_json(tier,[{"role":"user","content":content}],max_tokens=750)
+        if not r.get("ok"):return r
+        d=r["data"]
+        d["repair_seconds"]=max(20,min(90,int(d.get("repair_seconds") or 35)))
+        d["retest_seconds"]=max(20,min(120,int(d.get("retest_seconds") or 55)))
+        return {"ok":True,"data":d}
