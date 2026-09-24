@@ -157,17 +157,17 @@ async def background_loop():
     global LAST_BACKUP
     while True:
         try:
-            ensure_core_node();RETURNS.tick();MICRO.tick();STATE["activity_context"]=VERIFIER.status();auto_desktop_attention();await maybe_autogoal();await maybe_web_brain();STATE["maintenance"]=MAINT.safe_tick(HUB.devices(),AI.health());await MAINT.propose_if_needed(health())
+            ensure_core_node();RETURNS.tick();MICRO.tick();STATE["activity_context"]=VERIFIER.status();await auto_desktop_attention();await maybe_autogoal();await maybe_web_brain();STATE["maintenance"]=await asyncio.to_thread(MAINT.safe_tick,HUB.devices(),AI.health());await MAINT.propose_if_needed(health())
             now=time.time();interval=float(CFG.get("backup_interval_minutes",30))*60
             if now-LAST_BACKUP>=interval:
-                STORAGE.backup(DATA/"backups",CFG.get("backup_keep",14));LAST_BACKUP=now
+                await asyncio.to_thread(STORAGE.backup,DATA/"backups",CFG.get("backup_keep",14));LAST_BACKUP=now
         except Exception as e:
             STATE["last_error"]=f"{type(e).__name__}: {e}"
         await asyncio.sleep(max(2,int(CFG.get("verdict_interval_seconds",5))))
 
-def auto_desktop_attention():
+async def auto_desktop_attention():
     if not CURRENT["session_id"]:return
-    sample=DESKTOP.sample()
+    sample=await asyncio.to_thread(DESKTOP.sample)
     _,gaze=HUB.primary_gaze()
     fused=FUSION.score(gaze,sample)
     STATE["active_window"]=sample.get("active_window","")
@@ -175,7 +175,7 @@ def auto_desktop_attention():
     STATE["screen_change"]=sample.get("screen_change")
     STATE["input_recent"]=sample.get("input_recent")
     STATE["sensor_confidence"]=fused.get("confidence")
-    attention(AttentionReq(score=fused["score"],screen_change=sample.get("screen_change"),input_recent=sample.get("input_recent")))
+    await asyncio.to_thread(attention,AttentionReq(score=fused["score"],screen_change=sample.get("screen_change"),input_recent=sample.get("input_recent")))
 
 async def maybe_web_brain():
     if not WEB.running:await WEB.run_once(force=False)
