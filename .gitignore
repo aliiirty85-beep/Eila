@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+data/
+logs/
+*.log
+.idea/
+.vscode/
+android/EilaCompanionAndroid/.gradle/
+android/EilaCompanionAndroid/build/
+android/EilaCompanionAndroid/app/build/
+android/EilaCompanionAndroid/local.properties
