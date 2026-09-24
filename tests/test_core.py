@@ -205,3 +205,46 @@ def test_sync_offer_rejects_wrong_protocol_and_deduplicates_events():
         good=sync.store_offer("phone",snap)
         assert good["ok"] and good["events_applied"]==1 and good["duplicates"]==1
     finally:td.cleanup()
+
+
+def test_policy_history_and_rollback():
+    from app.sync import EventBus
+    from app.memory import PolicyEngine
+    td,s,_=env()
+    try:
+        p=PolicyEngine(s.connect,EventBus(s.connect))
+        a=p.add("study",{},{"microgoal.seconds":45},60)
+        pid=a["policy"]["policy_id"]
+        b=p.add("study",{},{"microgoal.seconds":70},60,policy_id=pid)
+        assert b["policy"]["version"]==2
+        hist=p.history(pid)
+        assert [x["version"] for x in hist][:2]==[2,1]
+        r=p.rollback(pid,1)
+        assert r["ok"] and r["policy"]["action"]["microgoal.seconds"]==45
+        assert r["policy"]["version"]==3
+    finally:td.cleanup()
+
+def test_replica_offer_restores_missing_spine_state():
+    from app.sync import EventBus,SpineState,SyncManager
+    td,s,_=env()
+    try:
+        mem=MemoryManager(s.connect);events=EventBus(s.connect);sp=SpineState(s.connect,events)
+        sync=SyncManager(s.connect,mem,3,events,sp)
+        snap={"protocol_version":3,"spine":{
+            "session":{"revision":4,"updated_at":1700000000,"source_device":"phone",
+                       "value":{"goal":"زیست","session_id":12}}
+        },"events_tail":[],"policies":[]}
+        out=sync.store_offer("phone",snap)
+        assert out["ok"] and out["spine_applied"]==1
+        assert sp.get("session")["value"]["goal"]=="زیست"
+    finally:td.cleanup()
+
+def test_maintenance_synthetic_db_probe():
+    from app.maintenance import MaintenanceEngine
+    class DummyAI: pass
+    td,s,_=env()
+    try:
+        m=MaintenanceEngine(s.connect,s,DummyAI(),Path(td.name),{"maintenance_interval_minutes":0,"backup_keep":1})
+        checks=m.synthetic_checks()
+        assert checks["db_read_write"]["ok"]
+    finally:td.cleanup()
