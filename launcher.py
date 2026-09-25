@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os,subprocess,sys,time
+import os,subprocess,sys,time,socket,urllib.request,json
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parent
@@ -12,6 +12,19 @@ def log(msg):
     print(line,flush=True)
     with LOG.open("a",encoding="utf-8") as f:
         f.write(line+"\n")
+
+def port_open(host,port):
+    s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.settimeout(.35)
+    try:return s.connect_ex((host,int(port)))==0
+    finally:s.close()
+
+def healthy_existing(port):
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health",timeout=1.5) as r:
+            data=json.loads(r.read().decode("utf-8","replace"))
+            return r.status==200 and bool(data.get("ok"))
+    except Exception:
+        return False
 
 def run_core(env,host,port):
     cmd=[sys.executable,"-m","uvicorn","app.main:app","--host",host,"--port",port,"--log-level","debug"]
@@ -47,6 +60,13 @@ def main():
         if safe:env["EILA_SAFE_MODE"]="1"
         host=env.get("EILA_HOST","0.0.0.0")
         port=env.get("EILA_PORT","8765")
+        if port_open("127.0.0.1",port):
+            if healthy_existing(port):
+                log("Eila is already running and healthy; not starting a duplicate Core.")
+                return 0
+            log(f"Port {port} is already occupied, but Eila health is not responding. Refusing restart loop.")
+            log("Close the stale/conflicting process, then start Eila again.")
+            return 3
         log("Starting Eila"+(" [SAFE MODE]" if safe else ""))
         try:
             code=run_core(env,host,port)
