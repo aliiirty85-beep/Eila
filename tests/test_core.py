@@ -393,3 +393,14 @@ def test_ai_router_provider_call_does_not_block_event_loop(monkeypatch):
     elapsed,result=asyncio.run(scenario())
     assert elapsed<.15
     assert result=="ok"
+
+
+def test_devices_excludes_retired_live_entry_by_default():
+    td,s,_=env()
+    try:
+        h=DeviceHub(s.connect,15)
+        h.heartbeat("phone","phone","P",{"gaze":True},{})
+        h.live["phone"]["status"]="retired"
+        assert all(d["device_id"]!="phone" for d in h.devices())
+        assert any(d["device_id"]=="phone" for d in h.devices(include_retired=True))
+    finally:td.cleanup()
