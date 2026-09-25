@@ -65,7 +65,7 @@ def test_vertical_slice_wrong_repair_retest_return_restart(vertical_runtime,monk
     )))
     assert wrong["ok"] and not wrong["passed"]
     assert wrong["repair_microgoal"]["kind"]=="repair"
-    assert runtime.SPINE.get("pending_retest")["value"]["retest_expected"] if False else True
+    assert runtime.SPINE.get("pending_retest")["value"]["expected"]=="4"
     repair_id=runtime.MICRO.public()["id"]
     assert repair_id!=first_id
 
