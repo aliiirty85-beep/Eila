@@ -39,6 +39,23 @@ def token():
     from app.security import SecurityManager
     return SecurityManager(DATA).token
 
+def lan_ip():
+    # Route-based discovery first; no packet needs to be received.
+    s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8",80))
+        ip=s.getsockname()[0]
+        if ip and not ip.startswith("127."):return ip
+    except Exception:
+        pass
+    finally:
+        s.close()
+    try:
+        ip=socket.gethostbyname(socket.gethostname())
+        return ip if ip and not ip.startswith("127.") else None
+    except Exception:
+        return None
+
 def launch_core():
     flags=0
     if os.name=="nt":flags=getattr(subprocess,"CREATE_NEW_CONSOLE",0)
@@ -76,9 +93,17 @@ def main():
     b=backup_via_core()
     print("[OK] Initial backup created." if b.get("ok") else "[WARN] Backup request failed: "+str(b.get("reason") or b))
     print()
+    t=token();ip=lan_ip()
     print("Pairing token:")
-    print(token())
+    print(t)
     print()
+    if ip:
+        print("Phone / tablet Server URL:")
+        print(f"http://{ip}:8765")
+        print()
+    else:
+        print("[WARN] LAN IP could not be determined automatically.")
+        print()
     print("Dashboard:")
     print(DASHBOARD_URL)
     try:webbrowser.open(DASHBOARD_URL,new=2)
