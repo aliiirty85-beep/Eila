@@ -51,4 +51,4 @@ if not "%RC%"=="0" (
   exit /b %RC%
 )
 echo Setup complete.
-pause
+if not defined EILA_NO_PAUSE pause
