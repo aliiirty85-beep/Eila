@@ -322,6 +322,24 @@ def micro_start(r:MicroReq):
     g=MICRO.start(CURRENT["session_id"],r.instruction,r.kind,r.question,r.expected,"manual",secs,style,w["display_instruction"],w["salience"],r.context_ref)
     SPINE.set("microgoal",g,"core");BUS.queue("microgoal",g,ttl_seconds=900);return {"ok":True,"microgoal":g,"theme":w["theme"]}
 
+def local_repair_plan(finished:dict,topic:str,error_type:str):
+    """Critical learning loop fallback that needs no model or network.
+    It never invents unseen content: without a source it reuses the original prompt for retest."""
+    instruction=finished.get("instruction") or "همان بخش را دوباره بررسی کن."
+    question=finished.get("question") or "نکته اصلی این بخش چه بود؟"
+    return {
+        "repair_instruction":"قبل از ادامه، خطا را در یک جمله تشخیص بده و بگو دفعه بعد چه چیزی را چک می‌کنی.",
+        "repair_question":"این اشتباه بیشتر از ندانستن مفهوم، بی‌دقتی، عجله، محاسبه یا بدخواندن سؤال بود؟ چرا؟",
+        "repair_expected":"",
+        "repair_seconds":35,
+        "retest_instruction":instruction,
+        "retest_question":question,
+        "retest_expected":finished.get("expected",""),
+        "retest_seconds":55,
+        "topic":topic,
+        "error_type":error_type or "unknown"
+    }
+
 @app.post("/api/micro/feedback")
 async def micro_feedback(r:FeedbackReq):
     before=float(STATE.get("attention_score",50))
@@ -346,7 +364,11 @@ async def micro_feedback(r:FeedbackReq):
 
     # Failure becomes repair -> retest, rather than silent abandonment.
     if not result["passed"] and source!="repair" and CURRENT["session_id"]:
-        repair=await QUESTIONS.repair_after_failure(finished,r.answer,r.error_type,topic)
+        active_source=CONTEXT.current()
+        if active_source and (active_source.get("content") or active_source.get("ref")):
+            repair=await QUESTIONS.repair_after_failure(finished,r.answer,r.error_type,topic)
+        else:
+            repair={"ok":True,"data":local_repair_plan(finished,topic,r.error_type),"local_fallback":True}
         if repair.get("ok"):
             d=repair["data"]
             pending={"instruction":d.get("retest_instruction") or finished.get("instruction",""),
