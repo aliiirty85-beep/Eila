@@ -226,15 +226,31 @@ def operating_mode():
 
 async def maybe_autogoal():
     global LAST_AUTOGOAL
-    if not CURRENT["session_id"] or MICRO.current:return
-    activity=VERIFIER.status()
-    if activity and activity.get("blocks_study"):return
+    if proactive_quiet():return
+    now=time.time()
+    if not CURRENT["session_id"]:
+        # Invite; only the user can choose a goal and start a study session.
+        if now-float(STORAGE.get_meta("last_idle_invitation",0))>=86400:
+            BUS.queue("notify",{"text":"ایلا اینجاست. اگر آماده‌ای، هدف و مقدار مطالعه را انتخاب کن و شروع را بزن؛ فعلاً منتظر انتخاب تو می‌مانم.","idle_invitation":True},ttl_seconds=86400)
+            STORAGE.set_meta("last_idle_invitation",now)
+        return
+    if MICRO.current:
+        g=MICRO.public()
+        previous=STORAGE.get_meta("micro_followup",{}) or {}
+        if previous.get("id")!=g["id"]:previous={"id":g["id"],"count":0,"at":0}
+        if now-g["deadline_at"]>=30 and previous["count"]<2 and now-previous["at"]>=120:
+            BUS.queue("notify",{"text":"هنوز منتظر پاسخ همان مأموریت هستم. پاسخ کوتاهت را بفرست؛ اگر گیر کردی بگو، یا برای توقف «پایان» را بزن.","microgoal_id":g["id"]},ttl_seconds=86400)
+            STORAGE.set_meta("micro_followup",{"id":g["id"],"count":previous["count"]+1,"at":now})
+        return
+    session_id=CURRENT["session_id"]
     now=time.time();gaze_device,gaze=HUB.primary_gaze();gaze=gaze or {"zone":"laptop","quality":0.0,"event":""}
     high_value=(gaze.get("event") or "").lower() in {"long_fixation","rapid_revisit","flighty","stuck"} or STATE.get("risk",{}).get("level")=="high"
     interval=8 if high_value else int(CFG.get("screen_vision_interval_seconds",20))
     if now-LAST_AUTOGOAL<interval:return
     LAST_AUTOGOAL=now
     result=await QUESTIONS.from_gaze(gaze,deep=high_value)
+    # A user may stop, pause, or create a goal while the provider is running.
+    if CURRENT["session_id"]!=session_id or MICRO.current or proactive_quiet():return
     if result.get("ok"):
         d=result["data"];actions=policy_actions(d.get("kind","study"))
         forced=actions.get("intervention.style") or actions.get("novelty.style")
@@ -251,6 +267,11 @@ async def maybe_autogoal():
         w=ENG.wrap(instruction,style,45,MICRO.streak)
         g=MICRO.start(CURRENT["session_id"],instruction,"recall","در یک جمله چه فهمیدی؟","","local-fallback",45,style,w["display_instruction"],w["salience"],"")
     SPINE.set("microgoal",g,"core");BUS.queue("microgoal",g,ttl_seconds=900)
+
+def proactive_quiet():
+    activity=VERIFIER.status()
+    return bool(STORAGE.get_meta("proactive_stopped",False) or STATE.get("flow")
+                or (activity and activity.get("blocks_study")) or RETURNS.active())
 
 @app.get("/")
 def root_ui():return FileResponse(BASE/"app"/"static"/"index.html")
@@ -275,11 +296,13 @@ def start_session(r:StartReq):
     if CURRENT["session_id"]:return {"ok":True,"session":CURRENT,"reason":"already-active"}
     now=int(time.time());c=db();cur=c.execute("insert into sessions(started_at,goal,plan) values(?,?,?)",(now,r.goal,r.plan));c.commit();sid=int(cur.lastrowid);c.close()
     CURRENT.update({"session_id":sid,"goal":r.goal,"plan":r.plan,"started_at":now});FOCUS.session_started=time.time();RIVAL.ensure_round(sid)
+    STORAGE.set_meta("proactive_stopped",False);STATE["flow"]=False
     SPINE.set("session",dict(CURRENT),"core")
     return {"ok":True,"session":CURRENT}
 
 @app.post("/api/session/stop")
 def stop_session():
+    STORAGE.set_meta("proactive_stopped",True)
     sid=CURRENT["session_id"];summary=MEM.session_summary(sid) if sid else {"text":"","points":[]}
     if sid:
         c=db();c.execute("update sessions set ended_at=?,summary=? where id=?",(int(time.time()),summary["text"],sid));c.commit();c.close()
@@ -384,7 +407,20 @@ def gaze(r:GazeReq):
     sample=r.model_dump();HUB.ingest_gaze(r.device_id,sample);STATE["gaze_device"]=r.device_id;STATE["gaze"]=sample;return {"ok":True}
 
 @app.get("/api/device/{device_id}/commands")
-def commands(device_id:str):return {"commands":BUS.pending(device_id)}
+def commands(device_id:str):
+    out=[];quiet=proactive_quiet();g=MICRO.public()
+    for command in BUS.pending(device_id):
+        p=command["payload"];kind=command["kind"]
+        goal_id=p.get("microgoal_id") or (p.get("id") if kind=="microgoal" else None)
+        obsolete=(p.get("idle_invitation") and (CURRENT["session_id"] or STORAGE.get_meta("proactive_stopped",False)))
+        obsolete=obsolete or (goal_id and (not g or g["id"]!=goal_id))
+        obsolete=obsolete or (p.get("study_session_id") and p["study_session_id"]!=CURRENT["session_id"])
+        if obsolete:
+            BUS.ack(command["id"],device_id)
+            continue
+        if quiet and (p.get("idle_invitation") or goal_id or p.get("study_session_id")):continue
+        out.append(command)
+    return {"commands":out}
 
 @app.post("/api/device/{device_id}/commands/{command_id}/ack")
 def command_ack(device_id:str,command_id:int):BUS.ack(command_id,device_id);return {"ok":True}
@@ -397,11 +433,11 @@ def attention(r:AttentionReq):
         STATE.update({"attention_score":score,"phase":"DRIVING","last_intervention":"","activity_context":activity})
         return STATE
     critical=score<28 or float((gaze or {}).get("away_streak_seconds") or 0)>=8
-    if not flow and FOCUS.can_intervene(critical):
+    if CURRENT["session_id"] and not proactive_quiet() and not flow and FOCUS.can_intervene(critical):
         if critical:intervention="ایلا: RETURN. فقط همین مأموریت.";kind="critical-return"
         elif risk["level"]=="high":intervention="ایلا: افت نزدیکه؛ انتخاب اضافه نداریم. همین micro-goal را تحویل بده.";kind="prefailure"
         if intervention:
-            FOCUS.mark_intervention();BUS.queue("speak" if critical else "notify",{"text":intervention},ttl_seconds=120)
+            FOCUS.mark_intervention();BUS.queue("speak" if critical else "notify",{"text":intervention,"study_session_id":CURRENT["session_id"]},ttl_seconds=120)
             c=db();c.execute("insert into interventions(ts,session_id,kind,pre_score,metadata) values(?,?,?,?,?)",(int(time.time()),CURRENT["session_id"],kind,score,json.dumps({"risk":risk},ensure_ascii=False)));c.commit();c.close()
     now=int(time.time());c=db()
     pending=c.execute("select id,pre_score from interventions where post_score is null and ts<=? and ts>=?",(now-25,now-180)).fetchall()

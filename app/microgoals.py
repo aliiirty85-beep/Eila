@@ -22,7 +22,8 @@ class MicroGoalEngine:
         d=dict(self.current);d.pop("expected",None);d["remaining_seconds"]=max(0,int(self.current["deadline_at"]-time.time()));d["streak"]=self.streak;return d
 
     def tick(self):
-        if self.current and self.current["status"]=="waiting" and time.time()>self.current["deadline_at"]:self._finish("expired","",False,"deadline")
+        # A deadline is a cue to follow up, not evidence of failure or consent
+        # to replace an unanswered task. Keep WAIT until feedback or stop.
         return self.public()
 
     @staticmethod
@@ -30,6 +31,7 @@ class MicroGoalEngine:
 
     def feedback(self,answer="",status="done",note="",confidence=.5,latency_ms=0,topic="",error_type=""):
         if not self.current:return {"ok":False,"reason":"no-active-microgoal"}
+        if status=="done" and not answer.strip():return {"ok":False,"reason":"answer-required"}
         expected=self._norm(self.current.get("expected",""));got=self._norm(answer)
         if status in ("failed","wrong","stuck"):passed=False
         elif expected and got:passed=(got==expected or got in expected or expected in got)
@@ -49,5 +51,4 @@ class MicroGoalEngine:
         c=self.db_factory();r=c.execute("select * from microgoals where session_id=? and status='waiting' order by id desc limit 1",(session_id,)).fetchone();c.close()
         if not r:return None
         d=dict(r)
-        if time.time()-d["created_at"]>max_age_seconds:return None
         self.current=d;return self.public()
