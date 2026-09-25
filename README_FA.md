@@ -35,13 +35,17 @@
 ## اصل هزینه
 قابلیت حیاتی نباید به ChatGPT Plus یا API دلاری وابسته باشد. مدل‌های پولی فقط Turbo هستند. اگر همه‌ی providerهای آنلاین قطع شوند، قرارداد بازگشت، memory، rival، cached microgoal و نگهبانی پایه باقی می‌مانند؛ کیفیت سؤال عمیق ممکن است پایین‌تر شود.
 
-## Windows
-1. Python 3.11 یا 3.12 نصب کن.
-2. \`setup_windows.bat\`
-3. برای fallback رایگان، Ollama را نصب کن.
-4. \`run_windows.bat\`
-5. داشبورد: \`http://127.0.0.1:8765\`
-6. \`show_token.bat\` را اجرا کن و token را در Companion وارد کن.
+## Windows — مسیر توصیه‌شده
+1. Python 3.11 یا 3.12 نصب باشد.
+2. فقط روی **START_EILA.bat** دابل‌کلیک کن.
+3. اگر first-run باشد، محیط را خودش آماده می‌کند.
+4. Core را health-check می‌کند، backup اولیه می‌سازد، Pairing Token را نشان می‌دهد و Dashboard را باز می‌کند.
+5. اگر Core سالم از قبل روشن باشد، نمونه دوم ایجاد نمی‌کند.
+6. اگر پورت اشغال ولی Core ناسالم باشد، چیزی را خودسرانه kill نمی‌کند و خطای روشن می‌دهد.
+
+برای عیب‌یابی بدون تایپ دستور، **DIAGNOSE_EILA.bat** را اجرا کن و از پنجره‌اش اسکرین‌شات بفرست.
+
+مسیر دستی فقط برای توسعه‌دهنده باقی می‌ماند: setup_windows.bat سپس run_windows.bat.
 
 ## Android
 APK از GitHub Actions workflow **Build Eila Android** ساخته می‌شود.
