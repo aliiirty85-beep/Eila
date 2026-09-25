@@ -24,13 +24,23 @@ class MainActivity:AppCompatActivity(){
         super.onCreate(savedInstanceState);prefs=AppPrefs(this);NotificationHelper.ensure(this)
         val root=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(32,32,32,32);gravity=Gravity.CENTER_HORIZONTAL}
         fun input(hint:String,value:String)=EditText(this).apply{this.hint=hint;setText(value)}
-        val title=TextView(this).apply{text="Eila Companion 2.0 LTS";textSize=25f;gravity=Gravity.CENTER}
+        val title=TextView(this).apply{text="Eila Companion — Spine v3";textSize=25f;gravity=Gravity.CENTER}
         val server=input("http://IP-LAPTOP:8765",prefs.serverUrl);val token=input("Pairing token",prefs.pairingToken);val name=input("نام دستگاه",prefs.deviceName)
         val status=TextView(this).apply{text="سرویس دوربین را از همین صفحه شروع کن. هر دستگاه کالیبراسیون جدا دارد."}
-        val save=Button(this).apply{text="ذخیره اتصال"};val start=Button(this).apply{text="شروع ایلا / Gaze"};val stop=Button(this).apply{text="توقف Gaze"}
+        val save=Button(this).apply{text="ذخیره اتصال"};val test=Button(this).apply{text="تست اتصال"};val start=Button(this).apply{text="شروع ایلا / Gaze"};val stop=Button(this).apply{text="توقف Gaze"}
         val cal=Button(this).apply{text="کالیبراسیون شخصی Gaze"};val page=Button(this).apply{text="عکس صفحه کتاب / منبع فعال"};val voice=Button(this).apply{text="صحبت با ایلا"}
-        listOf(title,server,token,name,save,start,stop,cal,page,voice,status).forEach{root.addView(it,LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,9,0,9)})};setContentView(root)
+        listOf(title,server,token,name,save,test,start,stop,cal,page,voice,status).forEach{root.addView(it,LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,9,0,9)})};setContentView(root)
         save.setOnClickListener{prefs.serverUrl=server.text.toString();prefs.pairingToken=token.text.toString();prefs.deviceName=name.text.toString();Toast.makeText(this,"ذخیره شد",Toast.LENGTH_SHORT).show()}
+        test.setOnClickListener{
+            prefs.serverUrl=server.text.toString();prefs.pairingToken=token.text.toString();prefs.deviceName=name.text.toString()
+            status.text="در حال تست اتصال..."
+            Thread{
+                val health=EilaApi(this).get("/api/health")
+                runOnUiThread{
+                    status.text=if(health?.optBoolean("ok")==true)"اتصال به Eila Core برقرار است." else "اتصال برقرار نشد؛ Server و Pairing Token را بررسی کن."
+                }
+            }.start()
+        }
         start.setOnClickListener{save.performClick();withCamera{ContextCompat.startForegroundService(this,Intent(this,GazeService::class.java));status.text="ایلا فعال شد. اعلان دائمی باید دیده شود."}}
         stop.setOnClickListener{stopService(Intent(this,GazeService::class.java));status.text="Gaze متوقف شد."}
         cal.setOnClickListener{withCamera{ContextCompat.startForegroundService(this,Intent(this,GazeService::class.java));startActivity(Intent(this,CalibrationActivity::class.java))}}

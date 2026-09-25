@@ -17,11 +17,24 @@ class MaintenanceEngine:
         c=self.db_factory();c.execute("insert into maintenance_events(ts,kind,severity,detail,repaired) values(?,?,?,?,?)",
           (int(time.time()),kind,severity,detail,int(bool(repaired))));c.commit();c.close()
 
+    def synthetic_checks(self):
+        now=int(time.time());checks={}
+        try:
+            c=self.db_factory()
+            probe="probe-"+str(now)
+            c.execute("insert or replace into meta(key,value) values('maintenance_probe',?)",(probe,))
+            row=c.execute("select value from meta where key='maintenance_probe'").fetchone()
+            checks["db_read_write"]={"ok":bool(row and row[0]==probe)}
+            c.commit();c.close()
+        except Exception as e:
+            checks["db_read_write"]={"ok":False,"error":f"{type(e).__name__}: {e}"}
+        return checks
+
     def safe_tick(self,devices=None,ai_health=None):
         interval=float(self.cfg.get("maintenance_interval_minutes",30))*60
         if time.time()-self.last_tick<interval:return self.last_report
         self.last_tick=time.time()
-        report={"ts":int(time.time()),"database":self.storage.integrity(),"repairs":[],"warnings":[]}
+        report={"ts":int(time.time()),"database":self.storage.integrity(),"synthetic":self.synthetic_checks(),"repairs":[],"warnings":[]}
         if not report["database"].get("ok"):
             r=self.storage.recover_latest_backup(self.data_dir/"backups")
             report["repairs"].append({"database_recovery":r});self._event("database-recovery","critical",json.dumps(r),r.get("ok"))

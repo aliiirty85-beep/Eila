@@ -126,3 +126,270 @@ def test_maintenance_safe_tick_creates_backup():
         assert out["database"]["ok"]
         assert list((Path(td.name)/"backups").glob("eila-*.db"))
     finally:td.cleanup()
+
+
+def test_event_bus_is_idempotent():
+    from app.sync import EventBus
+    td,s,_=env()
+    try:
+        e=EventBus(s.connect)
+        one=e.emit("test.event",{"x":1},event_id="same-id")
+        two=e.ingest({"event_id":"same-id","kind":"test.event","payload":{"x":99},"source_device":"phone"})
+        assert one["event_id"]=="same-id"
+        assert two["ok"] and two["duplicate"]
+        assert len(e.list_since(0,20))==1
+    finally:td.cleanup()
+
+def test_spine_revision_conflict_and_snapshot():
+    from app.sync import EventBus,SpineState
+    td,s,_=env()
+    try:
+        e=EventBus(s.connect);sp=SpineState(s.connect,e)
+        a=sp.set("identity",{"name":"Eila"},"phone",expected_revision=0)
+        assert a["ok"] and a["revision"]==1
+        conflict=sp.set("identity",{"name":"Other"},"laptop",expected_revision=0)
+        assert not conflict["ok"] and conflict["reason"]=="revision-conflict"
+        assert sp.snapshot()["identity"]["value"]["name"]=="Eila"
+    finally:td.cleanup()
+
+def test_device_replacement_preserves_identity_but_requests_recalibration():
+    from app.sync import EventBus
+    from app.device_hub import DeviceHub
+    td,s,_=env()
+    try:
+        hub=DeviceHub(s.connect,15,EventBus(s.connect))
+        hub.heartbeat("old-laptop","laptop","Old",{"screen":True},{},hardware_fingerprint="old-hw")
+        out=hub.replace("old-laptop","new-laptop","laptop","New",{"screen":True},"new-hw")
+        assert out["ok"]
+        assert "gaze-screen-geometry" in out["requires_recalibration"]
+        assert hub.get("old-laptop")["status"]=="retired"
+        assert hub.get("new-laptop")["status"]=="active"
+    finally:td.cleanup()
+
+def test_live_policy_is_versioned_and_safe():
+    from app.sync import EventBus
+    from app.memory import PolicyEngine
+    td,s,_=env()
+    try:
+        p=PolicyEngine(s.connect,EventBus(s.connect))
+        ok=p.add("study",{"risk":"high"},{"intervention.style":"duel"},70)
+        assert ok["ok"] and ok["policy"]["version"]==1
+        bad=p.add("global",{},{"filesystem.delete":"all"},99)
+        assert not bad["ok"]
+        assert p.resolve({"risk":"high"},"study")
+    finally:td.cleanup()
+
+def test_learning_model_schedules_fast_repair_after_error():
+    from app.learning import LearningModel
+    td,s,_=env()
+    try:
+        m=LearningModel(s.connect)
+        now=1_700_000_000
+        out=m.observe("زیست/تنفس",False,"concept-gap",now=now)
+        assert out["repair_due"]==now+15*60
+        due=m.due_reviews(now+15*60)
+        assert due and due[0]["reason"]=="repair-retest"
+        assert m.errors()[0]["error_type"]=="concept-gap"
+    finally:td.cleanup()
+
+def test_sync_offer_rejects_unknown_protocol_and_deduplicates_events():
+    from app.sync import SyncManager,EventBus,SpineState
+    td,s,_=env()
+    try:
+        mem=MemoryManager(s.connect);events=EventBus(s.connect);sp=SpineState(s.connect,events)
+        sync=SyncManager(s.connect,mem,3,events,sp)
+        bad=sync.store_offer("phone",{"protocol_version":1})
+        assert not bad["ok"] and bad["reason"]=="protocol-mismatch"
+        event={"event_id":"abc","kind":"device.test","payload":{"ok":True},"source_device":"phone"}
+        snap={"protocol_version":3,"events_tail":[event,event]}
+        good=sync.store_offer("phone",snap)
+        assert good["ok"] and good["events_applied"]==1 and good["duplicates"]==1
+    finally:td.cleanup()
+
+
+def test_policy_history_and_rollback():
+    from app.sync import EventBus
+    from app.memory import PolicyEngine
+    td,s,_=env()
+    try:
+        p=PolicyEngine(s.connect,EventBus(s.connect))
+        a=p.add("study",{},{"microgoal.seconds":45},60)
+        pid=a["policy"]["policy_id"]
+        b=p.add("study",{},{"microgoal.seconds":70},60,policy_id=pid)
+        assert b["policy"]["version"]==2
+        hist=p.history(pid)
+        assert [x["version"] for x in hist][:2]==[2,1]
+        r=p.rollback(pid,1)
+        assert r["ok"] and r["policy"]["action"]["microgoal.seconds"]==45
+        assert r["policy"]["version"]==3
+    finally:td.cleanup()
+
+def test_replica_offer_restores_missing_spine_state():
+    from app.sync import EventBus,SpineState,SyncManager
+    td,s,_=env()
+    try:
+        mem=MemoryManager(s.connect);events=EventBus(s.connect);sp=SpineState(s.connect,events)
+        sync=SyncManager(s.connect,mem,3,events,sp)
+        snap={"protocol_version":3,"spine":{
+            "session":{"revision":4,"updated_at":1700000000,"source_device":"phone",
+                       "value":{"goal":"زیست","session_id":12}}
+        },"events_tail":[],"policies":[]}
+        out=sync.store_offer("phone",snap)
+        assert out["ok"] and out["spine_applied"]==1
+        assert sp.get("session")["value"]["goal"]=="زیست"
+    finally:td.cleanup()
+
+def test_maintenance_synthetic_db_probe():
+    from app.maintenance import MaintenanceEngine
+    class DummyAI: pass
+    td,s,_=env()
+    try:
+        m=MaintenanceEngine(s.connect,s,DummyAI(),Path(td.name),{"maintenance_interval_minutes":0,"backup_keep":1})
+        checks=m.synthetic_checks()
+        assert checks["db_read_write"]["ok"]
+    finally:td.cleanup()
+
+
+def test_heartbeat_does_not_bump_revision_or_emit_event_when_only_state_changes():
+    from app.sync import EventBus
+    td,s,_=env()
+    try:
+        events=EventBus(s.connect);hub=DeviceHub(s.connect,15,events)
+        a=hub.heartbeat("phone","phone","P",{"gaze":True},{"battery":90},"fp1")
+        b=hub.heartbeat("phone","phone","P",{"gaze":True},{"battery":89},"fp1")
+        assert a["device_revision"]==b["device_revision"]==1
+        rows=events.list_since(0,20)
+        assert len(rows)==1 and rows[0]["kind"]=="device.joined"
+        c2=hub.heartbeat("phone","phone","P",{"gaze":True,"tts":True},{"battery":88},"fp1")
+        assert c2["device_revision"]==2
+        assert events.tail(10)[-1]["kind"]=="device.capabilities.changed"
+    finally:td.cleanup()
+
+def test_event_tail_returns_newest_events():
+    from app.sync import EventBus
+    td,s,_=env()
+    try:
+        e=EventBus(s.connect)
+        for i in range(520):e.emit("x",{"i":i},event_id="e-"+str(i))
+        tail=e.tail(500)
+        assert len(tail)==500
+        assert tail[0]["payload"]["i"]==20
+        assert tail[-1]["payload"]["i"]==519
+    finally:td.cleanup()
+
+def test_schema_v4_to_v5_creates_spine_tables_and_device_columns():
+    td=TemporaryDirectory()
+    try:
+        p=Path(td.name)/"old.db"
+        c=sqlite3.connect(p)
+        c.execute("create table meta(key text primary key,value text not null)")
+        c.execute("create table devices(device_id text primary key,kind text default 'unknown',name text default '',last_seen integer not null,capabilities text default '{}',state text default '{}')")
+        c.execute("create table sessions(id integer primary key autoincrement,started_at integer not null,ended_at integer,goal text default '',plan text default '',summary text default '')")
+        c.execute("create table microgoals(id integer primary key autoincrement,session_id integer,created_at integer not null,deadline_at integer not null,kind text not null,instruction text not null,question text default '',expected text default '',source text default 'manual',status text default 'waiting',answer text default '',result_note text default '',engagement_style text default '',display_instruction text default '',salience text default '',context_ref text default '')")
+        c.commit();c.close()
+        s=Storage(p);s.init();c=s.connect()
+        tables={r[0] for r in c.execute("select name from sqlite_master where type='table'").fetchall()}
+        cols={r["name"] for r in c.execute("pragma table_info(devices)").fetchall()}
+        version=c.execute("select value from meta where key='schema_version'").fetchone()[0]
+        c.close()
+        assert {"spine_state","events","behavior_policies","behavior_policy_history","student_topics","error_genome"}<=tables
+        assert {"status","retired_at","hardware_fingerprint","device_revision"}<=cols
+        assert version=="6"
+    finally:td.cleanup()
+
+
+def test_legacy_v2_snapshot_migrates_into_spine_v3():
+    from app.sync import SyncManager,EventBus,SpineState
+    td,s,_=env()
+    try:
+        mem=MemoryManager(s.connect);events=EventBus(s.connect);sp=SpineState(s.connect,events)
+        sync=SyncManager(s.connect,mem,3,events,sp)
+        snap={
+            "protocol_version":2,
+            "session":{"session_id":77,"goal":"شیمی","plan":"فصل ۱"},
+            "microgoal":{"id":9,"instruction":"تست ۳"},
+            "return_contract":{"id":2,"due_at":1700000300,"text":"برگشت"},
+            "memory":[{"category":"behavior","key":"pref","value":"short","confidence":.8}]
+        }
+        out=sync.store_offer("phone",snap)
+        assert out["ok"] and out["legacy_import"] and out["memory_imported"]==1
+        assert sp.get("session")["value"]["goal"]=="شیمی"
+        assert sp.get("microgoal")["value"]["instruction"]=="تست ۳"
+        assert mem.relevant()[0]["key"]=="pref"
+    finally:td.cleanup()
+
+def test_encrypted_replica_roundtrip():
+    from app.sync import SyncManager,EventBus,SpineState
+    td,s,_=env()
+    try:
+        mem=MemoryManager(s.connect);events=EventBus(s.connect);sp=SpineState(s.connect,events)
+        sync=SyncManager(s.connect,mem,3,events,sp)
+        key=sync.generate_replica_key()
+        path=Path(td.name)/"replica.bin"
+        payload={"protocol_version":3,"spine":{"identity":{"revision":1,"value":{"name":"Eila"}}}}
+        out=sync.write_encrypted_replica(path,key,payload)
+        assert out["ok"] and path.exists()
+        restored=sync.read_encrypted_replica(path,key)
+        assert restored==payload
+    finally:td.cleanup()
+
+
+def test_spine_same_revision_divergence_is_preserved_as_conflict():
+    from app.sync import EventBus,SpineState
+    td,s,_=env()
+    try:
+        events=EventBus(s.connect);sp=SpineState(s.connect,events)
+        sp.set("session",{"goal":"زیست"},"laptop",expected_revision=0)
+        out=sp.apply_remote("session",{"revision":1,"source_device":"phone","value":{"goal":"شیمی"}},"phone")
+        assert not out["ok"] and out["reason"]=="revision-divergence"
+        conflicts=sp.conflicts()
+        assert conflicts and conflicts[0]["key"]=="session"
+        assert sp.get("session")["value"]["goal"]=="زیست"
+        resolved=sp.resolve_conflict(conflicts[0]["id"],"remote","user")
+        assert resolved["ok"] and resolved["state"]["value"]["goal"]=="شیمی"
+        assert resolved["state"]["revision"]==2
+    finally:td.cleanup()
+
+def test_spine_same_revision_same_value_is_idempotent():
+    from app.sync import EventBus,SpineState
+    td,s,_=env()
+    try:
+        events=EventBus(s.connect);sp=SpineState(s.connect,events)
+        sp.set("identity",{"name":"Eila"},"laptop",expected_revision=0)
+        out=sp.apply_remote("identity",{"revision":1,"source_device":"phone","value":{"name":"Eila"}},"phone")
+        assert out["ok"] and not out["applied"] and out["reason"]=="same-state"
+        assert sp.conflicts()==[]
+    finally:td.cleanup()
+
+
+def test_ai_router_provider_call_does_not_block_event_loop(monkeypatch):
+    import asyncio,sys,types
+    from app.ai_router import AIRouter
+
+    class Msg:
+        content="ok"
+    class Choice:
+        message=Msg()
+    class Resp:
+        choices=[Choice()]
+
+    def blocking_completion(**kwargs):
+        time.sleep(.25)
+        return Resp()
+
+    fake=types.SimpleNamespace(completion=blocking_completion)
+    monkeypatch.setitem(sys.modules,"litellm",fake)
+    monkeypatch.setenv("EILA_TEST_FAST_MODELS","fake/model")
+    router=AIRouter({"ai":{"fast_models_env":"EILA_TEST_FAST_MODELS","fallback_models":[]}})
+
+    async def scenario():
+        started=time.perf_counter()
+        task=asyncio.create_task(router.ask("fast",[{"role":"user","content":"x"}]))
+        await asyncio.sleep(.03)
+        elapsed=time.perf_counter()-started
+        result=await task
+        return elapsed,result
+
+    elapsed,result=asyncio.run(scenario())
+    assert elapsed<.15
+    assert result=="ok"

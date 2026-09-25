@@ -2,12 +2,15 @@ name: Check Eila Core
 on:
   workflow_dispatch:
   push:
-    branches: [ main, legend-v2 ]
+    branches: [ main, legend-v2, eila-spine-v3 ]
     paths:
       - 'app/**'
       - 'tests/**'
       - 'requirements*.txt'
       - 'launcher.py'
+      - 'start_eila.py'
+      - 'START_EILA.bat'
+      - 'setup_windows.bat'
       - 'doctor.py'
       - 'config.json'
       - '.github/workflows/check-core.yml'
@@ -21,10 +24,33 @@ jobs:
           python-version: '3.12'
       - run: pip install -r requirements.txt -r requirements-dev.txt
       - name: Syntax check
-        run: python -m compileall -q app launcher.py doctor.py tests
+        run: python -m compileall -q app launcher.py start_eila.py doctor.py tests
       - name: Import smoke test
         run: python -c "import app.main; print(app.main.CFG['version'])"
       - name: JavaScript syntax
         run: node --check app/static/app.js
+      - name: Dashboard command delivery
+        run: node --test tests/test_dashboard.cjs
       - name: Unit tests
         run: python -m pytest -q
+
+      - name: Startup HTTP smoke test
+        shell: bash
+        run: |
+          python -m uvicorn app.main:app --host 127.0.0.1 --port 8765 --log-level debug > /tmp/eila-startup.log 2>&1 &
+          PID=$!
+          OK=0
+          for i in {1..20}; do
+            if curl -fsS --max-time 2 http://127.0.0.1:8765/api/health >/tmp/eila-health.json; then
+              OK=1
+              break
+            fi
+            sleep 0.5
+          done
+          if [ "$OK" -ne 1 ]; then
+            cat /tmp/eila-startup.log
+            kill $PID || true
+            exit 1
+          fi
+          cat /tmp/eila-health.json
+          kill $PID || true

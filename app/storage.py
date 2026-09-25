@@ -2,7 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import sqlite3,time,json,shutil
 
-SCHEMA_VERSION=4
+SCHEMA_VERSION=6
 
 class Storage:
     def __init__(self,path:Path):
@@ -59,10 +59,74 @@ class Storage:
           id integer primary key autoincrement,ts integer not null,source text not null,
           event text not null,payload text default '{}'
         );
+        create table if not exists spine_state(
+          key text primary key,revision integer not null default 1,updated_at integer not null,
+          source_device text not null default 'core',value text not null
+        );
+        create table if not exists spine_conflicts(
+          id integer primary key autoincrement,created_at integer not null,key text not null,
+          local_revision integer not null,remote_revision integer not null,
+          local_source text default '',remote_source text default '',
+          local_value text not null,remote_value text not null,
+          status text not null default 'open',resolved_at integer,resolution text default ''
+        );
+        create table if not exists events(
+          seq integer primary key autoincrement,event_id text not null unique,created_at integer not null,
+          source_device text not null,kind text not null,entity_id text default '',
+          entity_version integer default 0,payload text not null default '{}'
+        );
+        create table if not exists event_acks(
+          event_id text not null,device_id text not null,acked_at integer not null,
+          primary key(event_id,device_id)
+        );
+        create table if not exists behavior_policies(
+          policy_id text primary key,created_at integer not null,updated_at integer not null,
+          scope text not null,trigger_json text not null default '{}',action_json text not null default '{}',
+          priority integer not null default 50,enabled integer not null default 1,version integer not null default 1,
+          source text default 'user',rationale text default '',supersedes text default ''
+        );
+        create table if not exists behavior_policy_history(
+          policy_id text not null,version integer not null,recorded_at integer not null,
+          scope text not null,trigger_json text not null default '{}',action_json text not null default '{}',
+          priority integer not null default 50,enabled integer not null default 1,
+          source text default 'user',rationale text default '',supersedes text default '',
+          primary key(policy_id,version)
+        );
+        create table if not exists capability_registry(
+          capability_id text not null,provider_device text not null,status text not null default 'unknown',
+          metadata text not null default '{}',last_verified integer not null,
+          primary key(capability_id,provider_device)
+        );
+        create table if not exists capability_requests(
+          request_id text primary key,created_at integer not null,request_text text not null,
+          spec text not null default '{}',status text not null default 'proposed',source text default 'user'
+        );
+        create table if not exists review_queue(
+          id integer primary key autoincrement,topic text not null,due_at integer not null,
+          reason text default '',strength real default 0,attempts integer default 0,status text default 'pending'
+        );
+        create table if not exists student_topics(
+          topic text primary key,updated_at integer not null,attempts integer default 0,
+          correct integer default 0,mastery real default 0,last_error text default '',next_due integer
+        );
+        create table if not exists error_genome(
+          error_type text primary key,updated_at integer not null,count integer default 0,
+          recent_count integer default 0,last_topic text default '',last_seen integer
+        );
+        create table if not exists behavior_model(
+          key text primary key,updated_at integer not null,value text not null,
+          confidence real default .5,evidence_count integer default 0
+        );
         """)
         self._column(c,"sessions","summary","text default ''")
         for name,ddl in (("answer","text default ''"),("context_ref","text default ''"),("engagement_style","text default ''"),("display_instruction","text default ''"),("salience","text default ''")):
             self._column(c,"microgoals",name,ddl)
+        for name,ddl in (
+            ("joined_at","integer default 0"),("status","text default 'active'"),
+            ("retired_at","integer"),("hardware_fingerprint","text default ''"),
+            ("calibration_generation","integer default 0"),("device_revision","integer default 1")
+        ):
+            self._column(c,"devices",name,ddl)
         c.execute("insert or replace into meta(key,value) values('schema_version',?)",(str(SCHEMA_VERSION),));c.commit();c.close()
 
     def integrity(self):
