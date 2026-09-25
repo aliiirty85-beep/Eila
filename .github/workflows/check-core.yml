@@ -8,6 +8,9 @@ on:
       - 'tests/**'
       - 'requirements*.txt'
       - 'launcher.py'
+      - 'start_eila.py'
+      - 'START_EILA.bat'
+      - 'setup_windows.bat'
       - 'doctor.py'
       - 'config.json'
       - '.github/workflows/check-core.yml'
@@ -21,7 +24,7 @@ jobs:
           python-version: '3.12'
       - run: pip install -r requirements.txt -r requirements-dev.txt
       - name: Syntax check
-        run: python -m compileall -q app launcher.py doctor.py tests
+        run: python -m compileall -q app launcher.py start_eila.py doctor.py tests
       - name: Import smoke test
         run: python -c "import app.main; print(app.main.CFG['version'])"
       - name: JavaScript syntax
