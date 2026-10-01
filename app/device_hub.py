@@ -53,6 +53,8 @@ class DeviceHub:
         now=time.time();out=[]
         seen=set()
         for d in self.live.values():
+            if not include_retired and d.get("status")=="retired":
+                continue
             x=dict(d);x["stale"]=now-x.get("last_seen",0)>self.stale_seconds;out.append(x);seen.add(x["device_id"])
         c=self.db_factory()
         rows=c.execute("select * from devices").fetchall();c.close()
